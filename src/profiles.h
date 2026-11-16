@@ -120,6 +120,11 @@ typedef struct MapProfile {
 	 * spot its info box takes no L; B twice, back to the map, first) */
 	MemProbe openAltIf[2];
 	MacroStep openAlt[8];
+	/* Written into the hidden copy before `open` (size 1, 2 or 4; 0: none):
+	 * a game whose menu reopens on the screen last used (The Minish Cap's
+	 * pause menu, told its last screen was the map). The game being played
+	 * is never written (GEN-2). */
+	struct { uint32_t addr, value; int size; } openPoke;
 	/* Optional second step: once the map is up (mem probes), if open2If
 	 * matches, wait open2Delay frames and press open2 (A Link to the Past:
 	 * L again on the world map zooms out to the whole world). */

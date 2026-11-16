@@ -6233,6 +6233,46 @@ static const MapProfile profiles[] = {
 		.animFrames = 8, .animStep = 4, .mapStill = true, .stillPick = STILL_RED,
 	},
 	{
+		/* addresses from the zeldaret/tmc decompilation (its tmc.sha1 is
+		 * the USA cartridge) */
+		.codes = { "BZME" },
+		.title = "The Legend of Zelda: The Minish Cap",
+		/* the pause menu reopens on the screen last used (items, quest
+		 * status or the map): the hidden copy's gPauseMenuOptions.screen is
+		 * set to the area map's first, so START opens on the map (4, or 5,
+		 * the dungeon map, where the area has one) (MC-1, MC-2) */
+		.openPoke = { 0x02034491, 0x04, 1 },
+		.open = { { K_START, 4 } },
+		.settleMax = 150, .openWithin = 40, .stableFrames = 3, .maxDiff = 300,
+		.dimWhenUnavailable = true,
+		.crop_x = 0, .crop_y = 0, .crop_w = 240, .crop_h = 160,
+		/* the stone frame's left and right sides, the background beside it */
+		.probes = { { 24, 40, 0xCECECE }, { 216, 40, 0xE7DEDE }, { 4, 150, 0xFFF7A5 }, { 236, 150, 0xFFF7A5 } },
+		.tolerance = 8,
+		/* on a map screen (4 area, 5 dungeon), faded in (pause menu step 2),
+		 * the game in its sub-task (gMain.substate 7) */
+		.mem = { { 0x02034491, 0xFF, 0x04, 1, true, 0x05, true }, { 0x020344A1, 0xFF, 0x02, 1 }, { 0x03001004, 0xFF, 0x07, 1 } },
+		/* in play (gMain task 2, state 2, substate 2: not a room change or
+		 * a sub-task) and Link has the map (inventory bit of ITEM_MAP, 0x47):
+		 * without it the pause menu has no map screen (MC-4) */
+		.live = { { 0x03001002, 0xFFFF, 0x0202, 2 }, { 0x03001004, 0xFF, 0x02, 1 }, { 0x02002B43, 0x40, 0x40, 1 } },
+		/* the title and file select (gMain task 0 / 1) (MC-5) */
+		.menu = { { 0x03001002, 0xFF, 0x00, 1, true, 0x01, true } },
+		/* gRoomControls area and room (MC-3) */
+		.room = { { 0x03000BF4, 0xFFFF, 0, 2 } },
+		/* the pause menu's lettering and prompts (MC-1): the MAP tab and the
+		 * L / R buttons (tiles 16-127, palette 5), "A Choose" (256-319,
+		 * palette 1) and the map cursor's corners (tile 14) */
+		.captureHide = { { -256, -128, 255, 159, 16, 127, 1, 1u << 5 },
+		                 { -256, -128, 255, 159, 256, 319, 0, 1u << 1 },
+		                 { -256, -128, 255, 159, 14, 14, 0, 1u << 0 } },
+		/* the title's wordmark (sprites), not the sword's gem below it or
+		 * PRESS START */
+		.logo = { .wait = 1100, .layers = 0x10, .maxY = 94 },
+		/* Link's marker blinks: shown still, in its visible state (MC-6) */
+		.animFrames = 16, .animStep = 4, .mapStill = true, .stillPick = STILL_COVER,
+	},
+	{
 		.codes = { "AVSE" },
 		.title = "Sword of Mana",
 		/* the Status screen, always: see som_compose */

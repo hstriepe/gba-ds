@@ -532,6 +532,9 @@ static const char* do_capture_(MapCapture* mc, const void* state) {
 	if (map_up(p, s)) {
 		return "screen already looks like the map";
 	}
+	if (p->openPoke.size == 1) emu_write8(s, p->openPoke.addr, (uint8_t) p->openPoke.value);
+	else if (p->openPoke.size == 2) emu_write16(s, p->openPoke.addr, (uint16_t) p->openPoke.value);
+	else if (p->openPoke.size == 4) emu_write32(s, p->openPoke.addr, p->openPoke.value);
 	/* (openAlt: the game's other way to the map, from where it's asked for) */
 	const MacroStep* open = p->openAlt[0].frames && memprobes_match(p->openAltIf, 2, s) ? p->openAlt : p->open;
 	for (int i = 0; i < 8 && open[i].frames; ++i) {
