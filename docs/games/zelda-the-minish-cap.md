@@ -29,7 +29,8 @@ Every game also follows the [general rules](README.md#general-rules) (GEN-1 to G
 ## Not covered yet
 
 - Europe (`BZMP`) and Japan (`BZMJ`): no ROMs tested.
-- The Dark Hyrule Castle maps and dungeons after Deepwood Shrine: no states yet.
+- Cave of Flames, Fortress of Winds, Temple of Droplets, Palace of Winds and Dark Hyrule Castle (MC-2) are tested on states made by warping from Deepwood Shrine (the `mc-us-warp-*` cases): Link at a room of each, with and without the dungeon's map, but not a real playthrough's progress (rooms visited, compass, bosses). Replace them with states from the device when there are some.
+- The Royal Crypt and Dark Hyrule Castle's grounds show the area map, not a dungeon map; a warped state can't test them (the area map stays on where Link last was outside), so they wait for states from the device. Dark Hyrule's overworld too.
 
 ## For the merge
 
