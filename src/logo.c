@@ -374,7 +374,9 @@ static void do_job(Job* j) {
 static void* worker(void* arg) {
 	(void) arg;
 	/* background work: let the game (and its audio) have the CPU first */
-#ifndef __wasi__
+#if defined(__APPLE__)
+	pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0); /* (macOS: SYS_gettid is another call there) */
+#elif !defined(__wasi__)
 	setpriority(PRIO_PROCESS, (id_t) syscall(SYS_gettid), 19);
 #endif
 #ifdef __ANDROID__

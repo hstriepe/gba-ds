@@ -477,7 +477,9 @@ static uint32_t rom_crc_read(const char* path, char files[][1024], int nFiles, i
 
 static void* rom_crc_worker(void* arg) {
 	(void) arg;
-#ifndef __wasi__
+#if defined(__APPLE__)
+	pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0); /* (macOS: SYS_gettid is another call there) */
+#elif !defined(__wasi__)
 	setpriority(PRIO_PROCESS, (id_t) syscall(SYS_gettid), 19); /* (background work: the game first) */
 #endif
 	pthread_mutex_lock(&crcLock);

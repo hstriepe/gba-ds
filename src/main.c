@@ -24,6 +24,7 @@
 #endif
 #include "emu.h"
 #include "profiles.h"
+#include "macos.h"
 
 #include <dirent.h>
 #include <libgen.h>
@@ -49,6 +50,8 @@ static bool dir_has_png(const char* path) {
 }
 
 static void on_signal(int sig) {
+	static const char msg[] = "quitting on a signal\n";
+	if (write(2, msg, sizeof(msg) - 1) < 0) { /* (nothing to do) */ }
 	(void) sig;
 	uiQuit = 1;
 }
@@ -118,6 +121,13 @@ int main(int argc, char** argv) {
 	/* GBADS_HOME: the app's folder when the executable runs from a copy
 	 * elsewhere (launch.sh, where the card won't run programs) */
 	if (getenv("GBADS_HOME") && getenv("GBADS_HOME")[0]) snprintf(exeDir, sizeof(exeDir), "%s", getenv("GBADS_HOME"));
+#ifdef __APPLE__
+	/* the app bundle's Resources (gba-ds.cfg, gamecontrollerdb.txt; a game's
+	 * app has the game in Game/): the working folder too, as Finder starts
+	 * apps in / */
+	macos_resource_dir(exeDir, sizeof(exeDir));
+	if (chdir(exeDir) != 0) fprintf(stderr, "note: can't change to %s\n", exeDir);
+#endif
 #ifdef __ANDROID__
 	/* the executable is Android's app_process: use the app's own folder */
 	if (android_home()) snprintf(exeDir, sizeof(exeDir), "%s", android_home());
@@ -135,7 +145,7 @@ int main(int argc, char** argv) {
 			snprintf(path, sizeof(path), "%s/.config/gba-ds/gba-ds.cfg", getenv("HOME"));
 			config_load_file(&cfg, path);
 		}
-#if !defined(__ANDROID__) && !defined(__wasi__)
+#if !defined(__ANDROID__) && !defined(__wasi__) && !defined(__APPLE__)
 		/* data-folder.cfg: data_dir, where GBA DS keeps its own files (in a
 		 * file of its own, which neither the zip nor an update has) */
 		snprintf(path, sizeof(path), "%s/data-folder.cfg", exeDir);
@@ -150,7 +160,10 @@ int main(int argc, char** argv) {
 	 * app's folder, or data_dir, moved there when that changes (paths.c) */
 	char dataDir[480];
 	snprintf(dataDir, sizeof(dataDir), "%s", exeDir);
-#if !defined(__ANDROID__) && !defined(__wasi__)
+#if defined(__APPLE__)
+	/* (the bundle is read-only: the data goes to Application Support, macos.m) */
+	macos_setup(&cfg, exeDir, dataDir, sizeof(dataDir));
+#elif !defined(__ANDROID__) && !defined(__wasi__)
 	snprintf(path, sizeof(path), "%s/data-folder.cfg", exeDir);
 	data_dir_setup(exeDir, getenv("GBADS_CONFIG") ? NULL : path, cfg.dataDir, false, dataDir, sizeof(dataDir));
 #endif
@@ -179,7 +192,9 @@ int main(int argc, char** argv) {
 		cfg.overlayMode = dir_has_png(path) ? OVM_CUSTOM : OVM_GENERATED;
 	}
 
-#ifndef __ANDROID__
+#if defined(__APPLE__)
+	/* (no EmulationStation or BananaOS on a Mac) */
+#elif !defined(__ANDROID__)
 	/* keep EmulationStation's entry for GBA DS current, if it's switched on */
 	es_integration_refresh(&cfg);
 	banana_integration_refresh();
@@ -205,12 +220,17 @@ int main(int argc, char** argv) {
 	i18n_init(cfg.language);
 
 	if (!ui_init(&cfg, true)) return 1;
+#ifdef __APPLE__
+	macos_menu_install(&cfg);
+#endif
 	ui_language_changed(); /* (the fonts the language's script needs) */
 	ui_accent(cfg.accent);
 	ui_theme(cfg.lightTheme);
 	ui_brightness(cfg.brightTop, cfg.brightBottom);
 	ra_init(&cfg); /* signs in to RetroAchievements in the background */
+#ifndef __APPLE__
 	update_init(&cfg, exeDir, argc, argv);
+#endif
 #ifdef __ANDROID__
 	fprintf(stderr, "startup: screens ready\n"); /* logcat's timestamps time the start-up steps */
 #endif

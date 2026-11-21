@@ -41,6 +41,11 @@ extern void web_sleep(unsigned ms) __attribute__((import_module("env"), import_n
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+#ifdef __APPLE__
+#include <fcntl.h>
+#include <unistd.h>
+#include "macos.h"
+#endif
 
 /* Times the game thread was taken off its core (involuntary context
  * switches): another thread got it, so the frame ran late through no work
@@ -6242,6 +6247,11 @@ static void log_path(char* out, size_t size) {
 #else
 	struct stat st;
 	if (fstat(2, &st) != 0 || !S_ISREG(st.st_mode)) return;
+#ifdef __APPLE__
+	char p[PATH_MAX];
+	if (fcntl(2, F_GETPATH, p) != -1) snprintf(out, size, "%s", p);
+	return;
+#endif
 	ssize_t n = readlink("/proc/self/fd/2", out, size - 1);
 	out[n > 0 ? n : 0] = 0;
 #endif
@@ -8141,6 +8151,65 @@ static enum GameExit game_run_inner(Config* c, const char* rom, bool fromLibrary
  * settings for the length of the game: what the file changed goes back to
  * what it was when the game ends, unless it was changed again meanwhile
  * (a menu choice for all games, which is saved already). */
+#ifdef __APPLE__
+/* The layout chosen in the menu bar, kept for all games (prefs.cfg) */
+static void mac_layout(const char* layout) {
+	ui_set_layout(layout);
+	gameTexAll = true; /* (the game may be in another view's place now) */
+	char prefs[1100];
+	prefs_file(prefs, sizeof(prefs));
+	const char* kv[1][2] = { { "layout", cfg->layout } };
+	config_kv_update(prefs, "# written by gba-ds's menus; overrides gba-ds.cfg", 1, kv);
+}
+
+/* A command from the menu bar (macos.m): as the hotkeys and the pause menu do it */
+static bool mac_command(int mc) {
+	static char lastDual[16] = "span-v";
+	bool forceMap = false; /* (a new map now: a state loaded, the second screen back) */
+	switch (mc) {
+	case MC_MENU:
+		if (menuOpen) menuOpen = false;
+		else open_menu();
+		break;
+	case MC_QUICK_SAVE: ui_osd(state_save(gp.quick) ? "State saved." : "Save failed."); break;
+	case MC_QUICK_LOAD:
+		if (!file_exists(gp.quick)) ui_osd("No quick state saved yet.");
+		else if (state_load(gp.quick)) { ui_osd("State loaded."); forceMap = true; }
+		else ui_osd("Load failed.");
+		break;
+	case MC_RESET:
+		emu_reset(&emu);
+		aheadReady = false;
+		bug_reset();
+		ra_reset();
+		mapShownIdx = -1;
+		menuOpen = false;
+		ui_osd("Game restarted");
+		break;
+	case MC_SECOND_SCREEN:
+		if (!strcmp(cfg->layout, "single")) {
+			mac_layout(lastDual);
+		} else {
+			snprintf(lastDual, sizeof(lastDual), "%s", cfg->layout);
+			mac_layout("single");
+		}
+		forceMap = true;
+		break;
+	case MC_STACKED: mac_layout("span-v"); forceMap = true; break;
+	case MC_SIDE_BY_SIDE: mac_layout("span-h"); forceMap = true; break;
+	case MC_SWAP: swap_screens(); break;
+	case MC_SHADER:
+		set_shader(cfg->shader != SH_OFF ? SH_OFF : cfg->shaderLast > SH_OFF && cfg->shaderLast < SH_COUNT ? cfg->shaderLast : SH_GRID);
+		ui_osd("%s", shader_label(cfg->shader));
+		break;
+	case MC_SIZE_2: case MC_SIZE_3: case MC_SIZE_4: case MC_SIZE_5:
+		ui_window_scale(2 + mc - MC_SIZE_2);
+		break;
+	}
+	return forceMap;
+}
+#endif
+
 enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 	GamePaths p;
 	game_paths(c, rom, &p);
@@ -8152,7 +8221,13 @@ enum GameExit game_run(Config* c, const char* rom, bool fromLibrary) {
 		fprintf(stderr, "game settings: %d from %s\n", n, p.settings);
 		ui_layout_pictures();
 	}
+#ifdef __APPLE__
+	macos_in_game(true);
+#endif
 	enum GameExit x = game_run_inner(c, rom, fromLibrary);
+#ifdef __APPLE__
+	macos_in_game(false);
+#endif
 	ui_stick_dpad(true);
 	/* back to the settings for all games (with what was changed for them meanwhile) */
 	const unsigned char *b = (const unsigned char*) &before, *a = (const unsigned char*) &after;
@@ -8871,6 +8946,9 @@ static enum GameExit game_run_inner(Config* c, const char* rom, bool fromLibrary
 				}
 			}
 		}
+#ifdef __APPLE__
+		for (int mc; (mc = macos_command()) != MC_NONE;) forceMap |= mac_command(mc);
+#endif
 		if (btn_released(B_HOME) && !(modBtn == B_HOME && comboUsed)) {
 			if (menuOpen) menuOpen = false;
 			else open_menu();

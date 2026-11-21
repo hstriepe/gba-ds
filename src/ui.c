@@ -17,6 +17,7 @@ void ui_stick_dpad(bool on) {
 #include "profiles.h"
 #include "emu.h"
 #include "i18n.h"
+#include "macos.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -270,6 +271,12 @@ static bool create_view(View* v, int display, const char* title, bool fullscreen
 		fprintf(stderr, "renderer: %s%s%s\n", SDL_GetRendererInfo(v->ren, &ri) == 0 ? ri.name : "?", gl ? ", " : "", gl ? gl : "");
 	}
 	SDL_SetRenderDrawBlendMode(v->ren, SDL_BLENDMODE_BLEND);
+#ifdef __APPLE__
+	/* mGBA's frames carry flags in their alpha byte, which the pictures
+	 * keep on their way to the window: Linux's displays ignore it, macOS
+	 * would show the desktop's black through those pixels */
+	macos_renderer_opaque(v->ren);
+#endif
 	SDL_SetRenderDrawColor(v->ren, 0, 0, 0, 255);
 	SDL_RenderClear(v->ren);
 	SDL_RenderPresent(v->ren);
@@ -422,7 +429,9 @@ bool ui_init(Config* c, bool wantDual) {
 		fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
 		return false;
 	}
+#ifndef __APPLE__
 	SDL_ShowCursor(SDL_DISABLE);
+#endif
 	SDL_GameControllerAddMappingsFromFile("gamecontrollerdb.txt");
 	if (getenv("SDL_GAMECONTROLLERCONFIG_FILE")) {
 		SDL_GameControllerAddMappingsFromFile(getenv("SDL_GAMECONTROLLERCONFIG_FILE"));
@@ -498,6 +507,10 @@ bool ui_init(Config* c, bool wantDual) {
 		nViews = 1;
 		bool single = !strcmp(cfg->layout, "single");
 		int ww = single ? 720 : 1440, wh = 480;
+#ifdef __APPLE__
+		/* a Mac window at 3x, shaped for the layout (macos.c sets span-v for dual) */
+		ui_layout_window_size(cfg->layout, 3, &ww, &wh);
+#endif
 		if (getenv("SDL_BANANA_PANELS")) {
 			/* BananaOS (no compositor): Banana's SDL makes the display both
 			 * panels together; the window covers it, and is split like sway's */
@@ -547,6 +560,44 @@ void ui_shutdown(void) {
 }
 
 static void layout_screens(void);
+
+void ui_layout_window_size(const char* layout, int scale, int* w, int* h) {
+	*w = GBA_W * scale, *h = GBA_H * scale;
+	if (!strcmp(layout, "span-v")) *h *= 2;
+	else if (!strcmp(layout, "span-h") || !strcmp(layout, "dual") || !strcmp(layout, "auto")) *w *= 2;
+}
+
+/* the scale the window is at now: its game screen's height over the GBA's (at least 1) */
+static int window_scale(void) {
+	int w, h;
+	if (nViews < 1 || !views[0].win) return 3;
+	SDL_GetWindowSize(views[0].win, &w, &h);
+	if (!strcmp(cfg->layout, "span-v")) h /= 2;
+	else if (!strcmp(cfg->layout, "span-h")) w /= 2;
+	int s = SDL_min(w / GBA_W, h / GBA_H);
+	return s < 1 ? 1 : s;
+}
+
+static void window_fit(int scale) {
+	if (nViews != 1 || !views[0].win) return;
+	if (SDL_GetWindowFlags(views[0].win) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) return;
+	int w, h;
+	ui_layout_window_size(cfg->layout, scale, &w, &h);
+	SDL_SetWindowSize(views[0].win, w, h);
+}
+
+void ui_set_layout(const char* layout) {
+	if (!strcmp(cfg->layout, layout)) return;
+	int scale = window_scale();
+	snprintf(cfg->layout, sizeof(cfg->layout), "%s", layout);
+	window_fit(scale);
+	ui_layout();
+}
+
+void ui_window_scale(int scale) {
+	window_fit(scale);
+	ui_layout();
+}
 
 void ui_layout(void) {
 	layout_screens();
@@ -1051,6 +1102,7 @@ bool ui_events(void) {
 	while (SDL_PollEvent(&ev)) {
 		switch (ev.type) {
 		case SDL_QUIT:
+			if (!uiQuit) fprintf(stderr, "quit asked for (window closed, or the system)\n");
 			uiQuit = 1;
 			break;
 		case SDL_APP_WILLENTERBACKGROUND:
@@ -1226,6 +1278,11 @@ void ui_read_buttons(void) {
 
 	/* keyboard (desktop testing, and devices whose HOME key arrives as a key) */
 	const Uint8* k = SDL_GetKeyboardState(NULL);
+#ifdef __APPLE__
+	/* (with Command held, the keys are the menu bar's) */
+	static const Uint8 none[SDL_NUM_SCANCODES];
+	if (SDL_GetModState() & KMOD_GUI) k = none;
+#endif
 	if (k[SDL_SCANCODE_X]) btnNow[B_A] = true;
 	if (k[SDL_SCANCODE_Z]) btnNow[B_B] = true;
 	if (k[SDL_SCANCODE_A]) btnNow[B_L] = true;
@@ -2686,6 +2743,13 @@ void ui_screenshot(const char* path) {
 	SDL_GetRendererOutputSize(v->ren, &w, &h);
 	SDL_Surface* s = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
 	if (SDL_RenderReadPixels(v->ren, NULL, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch) == 0) {
+#ifdef __APPLE__
+		/* (what the window shows: opaque, as macos_renderer_opaque makes it) */
+		for (int y = 0; y < h; ++y) {
+			Uint32* row = (Uint32*) ((Uint8*) s->pixels + (size_t) y * s->pitch);
+			for (int x = 0; x < w; ++x) row[x] |= 0xFF000000u;
+		}
+#endif
 		SDL_SaveBMP(s, path);
 		fprintf(stderr, "screenshot %dx%d -> %s\n", w, h, path);
 	} else {

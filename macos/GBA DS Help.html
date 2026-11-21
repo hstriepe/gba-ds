@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GBA DS Help</title>
+<style>
+	:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6e6e73; --bg: #fff; --line: #d2d2d7; --key: #f2f2f7; --accent: #5b4bd6; }
+	@media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --line: #3a3a3c; --key: #2c2c2e; --accent: #9d8cff; } }
+	body { font: 15px/1.5 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); max-width: 760px; margin: 0 auto; padding: 24px 20px 48px; }
+	h1 { font-size: 26px; margin: 0 0 4px; }
+	h2 { font-size: 18px; margin: 28px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+	p, li { margin: 6px 0; }
+	.lead { color: var(--muted); margin-bottom: 20px; }
+	table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+	td, th { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+	th { color: var(--muted); font-weight: 600; font-size: 13px; }
+	kbd { font: 13px ui-monospace, Menlo, monospace; background: var(--key); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+	a { color: var(--accent); }
+	.note { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>GBA DS</h1>
+<p class="lead">A Game Boy Advance with a second screen. The game plays on one screen; the other shows the game's own map, kept current as you explore, the way the DS Castlevanias do it. Games without a map use it in other ways (Mario Kart's race HUD, Tony Hawk's goal sheet), and the rest show their logo there.</p>
+
+<h2>The second screen</h2>
+<ul>
+	<li><b>View › Second Screen</b> (<kbd>⌘D</kbd>) switches it on and off. With it off, the window shows the game alone.</li>
+	<li><b>View › Stacked</b> (<kbd>⌥⌘D</kbd>) puts it under the game, <b>View › Side by Side</b> (<kbd>⇧⌘D</kbd>) beside it.</li>
+	<li><b>View › Swap Screens</b> (<kbd>⇧⌘X</kbd>) trades the two places. With the second screen off, it shows the map instead of the game for a moment.</li>
+	<li><b>View › Size</b> (<kbd>⌘2</kbd>–<kbd>⌘5</kbd>) sets the window to that many times the GBA's screen; you can also drag its edges. <b>Enter Full Screen</b> (<kbd>⌃⌘F</kbd>) fills the display.</li>
+	<li>The map is taken from a hidden second copy of the game about once a second and after each room change; the game you play is never paused for it. Before the first map, and on title screens, the second screen shows the logo.</li>
+</ul>
+<p class="note">Your choices are remembered for next time.</p>
+
+<h2>Keyboard</h2>
+<table>
+	<tr><th>GBA</th><th>Key</th><th>GBA</th><th>Key</th></tr>
+	<tr><td>A</td><td><kbd>X</kbd></td><td>L</td><td><kbd>A</kbd></td></tr>
+	<tr><td>B</td><td><kbd>Z</kbd></td><td>R</td><td><kbd>S</kbd></td></tr>
+	<tr><td>Start</td><td><kbd>Return</kbd></td><td>Select</td><td><kbd>Delete</kbd> or right <kbd>Shift</kbd></td></tr>
+	<tr><td>D-pad</td><td>arrow keys</td><td>Pause menu</td><td><kbd>Esc</kbd> (or <kbd>F1</kbd>)</td></tr>
+	<tr><td>Rewind (hold)</td><td><kbd>Tab</kbd></td><td>Fast-forward (hold)</td><td><kbd>Space</kbd></td></tr>
+	<tr><td>Quick bar</td><td><kbd>Q</kbd></td><td></td><td></td></tr>
+</table>
+<p>Hotkeys: hold <kbd>Esc</kbd> and press <kbd>S</kbd> to save the quick state, <kbd>A</kbd> to load it, <kbd>↑</kbd> to swap the screens, <kbd>↓</kbd> for the LCD shader, <kbd>Z</kbd> or <kbd>Return</kbd> to quit. (They are GBA DS's hotkey button, HOME, with R, L, Up, Down, B and Start; change them in the pause menu.)</p>
+<p>Game controllers work as soon as they're connected: the face buttons by position, the shoulders as L and R, the triggers for rewind and fast-forward, the Home or Guide button for the pause menu.</p>
+
+<h2>Menu bar</h2>
+<table>
+	<tr><th>Menu</th><th>Item</th><th>What it does</th></tr>
+	<tr><td>Game</td><td>Pause Menu <kbd>⌘P</kbd></td><td>GBA DS's own menu: save states, cheats, patches, display and sound settings, buttons and hotkeys. Move with the arrow keys, <kbd>X</kbd> to choose, <kbd>Z</kbd> to go back, or click.</td></tr>
+	<tr><td></td><td>Quick Save <kbd>⌘S</kbd>, Quick Load <kbd>⌘L</kbd></td><td>The quick state, one per game.</td></tr>
+	<tr><td></td><td>Restart <kbd>⌘R</kbd></td><td>Starts the game over (the battery save stays).</td></tr>
+	<tr><td></td><td>Show Data Folder</td><td>Opens the folder with the states, settings and screenshots in Finder.</td></tr>
+	<tr><td>View</td><td>Second Screen, Stacked, Side by Side, Swap Screens, LCD Shader, Size, Full Screen</td><td>See above. LCD Shader (<kbd>⇧⌘G</kbd>) puts a pixel grid over both screens.</td></tr>
+	<tr><td>Help</td><td>Help, Game Manual</td><td>This page; the game's manual, when the app has one.</td></tr>
+</table>
+
+<h2>Saves</h2>
+<ul>
+	<li>The game's own battery save is kept as you play, as on the cartridge. In an app made by GB App Builder it is the same file the app's GB Player version uses (<code>~/Library/Application Support/mGBA Games/&lt;game&gt;/saves/</code>), so you can switch between the two.</li>
+	<li>When you quit, GBA DS saves where you are and picks up there next time (the pause menu can turn this off). Ten save state slots are in the pause menu.</li>
+	<li>Save states are mGBA's own format: mGBA loads them, and GBA DS loads mGBA's.</li>
+</ul>
+
+<h2>More</h2>
+<p>Which games have a second screen, and what each one shows: <a href="https://github.com/kyannon/gba-ds/wiki/Supported-games">Supported games</a>. Everything else about playing: <a href="https://github.com/kyannon/gba-ds/wiki">the GBA DS wiki</a>.</p>
+<p class="note">GBA DS is by kyannon and contributors (<a href="https://github.com/kyannon/gba-ds">github.com/kyannon/gba-ds</a>); the macOS version is Harald Striepe's port. It is free software under the GNU General Public License, version 3, with no warranty; the full text is in the app (Contents/Resources/LICENSE). Emulation is <a href="https://mgba.io">mGBA</a>, © Jeffrey Pfau, under the Mozilla Public License 2.0. The game itself is not covered by these licenses. GBA DS is not affiliated with Nintendo.</p>
+</body>
+</html>

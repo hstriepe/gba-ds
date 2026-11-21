@@ -11,6 +11,15 @@
 CROSS      ?=
 CC         := $(CROSS)gcc
 MGBA_SRC   ?= deps/mgba
+# macOS (scripts/build-macos.sh): clang, arm64, a static SDL2, the menu bar in src/macos.m
+DARWIN     := $(if $(CROSS),,$(filter Darwin,$(shell uname -s)))
+ifneq ($(DARWIN),)
+CC         := clang
+MGBA_BUILD ?= $(MGBA_SRC)/build-macos
+SDL_PREFIX ?= deps/sdl-macos
+OUT        ?= build/macos
+MACOS_MIN  ?= 14.0
+endif
 MGBA_BUILD ?= $(MGBA_SRC)/build-host
 SDL_PREFIX ?= deps/sdl-host
 OUT        ?= build/$(if $(CROSS),$(patsubst %-,%,$(CROSS)),host)
@@ -39,6 +48,15 @@ LDFLAGS    += -L$(SDL_PREFIX)/lib -Wl,-rpath-link,$(SDL_PREFIX)/lib
 # mGBA's bundled zlib (for .zip ROMs), when it was built with it
 ZLIB_A     := $(wildcard $(MGBA_BUILD)/zlib/libz.a)
 LIBS       := $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lSDL2 -lpthread -lm
+ifneq ($(DARWIN),)
+override CFLAGS += -arch arm64 -mmacosx-version-min=$(MACOS_MIN)
+LDFLAGS    := -arch arm64 -mmacosx-version-min=$(MACOS_MIN)
+# (the system's zlib: mGBA's macOS build finds it; SDL2 linked in, so the app needs nothing installed)
+LIBS       := $(MGBA_BUILD)/libmgba.a $(SDL_PREFIX)/lib/libSDL2.a $(shell $(SDL_PREFIX)/bin/sdl2-config --static-libs | sed 's/-lSDL2//;s/-L[^ ]*//g') -lz -liconv -lm -framework Cocoa
+MACOS_SRC  := src/macos.m
+# the harness's libpng: Homebrew's
+TOOLS_DARWIN := -I$(shell brew --prefix 2>/dev/null || echo /opt/homebrew)/include -L$(shell brew --prefix 2>/dev/null || echo /opt/homebrew)/lib
+endif
 
 CORE_SRC   := src/emu.c src/patch.c src/mapcap.c src/profiles.c src/logo_masks.c
 # RetroAchievements: rcheevos (MIT), vendored in third_party/rcheevos
@@ -54,24 +72,30 @@ APP_SRC    := src/main.c src/config.c src/i18n.c src/i18n_data.c src/font.c src/
 
 all: $(OUT)/gba-ds
 
-$(OUT)/gba-ds: $(APP_SRC) src/*.h VERSION $(MGBA_BUILD)/libmgba.a $(RC_OBJ) $(WEBP_OBJ)
+$(OUT)/gba-ds: $(APP_SRC) $(MACOS_SRC) src/*.h VERSION $(MGBA_BUILD)/libmgba.a $(RC_OBJ) $(WEBP_OBJ)
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -DGBADS_RA -I$(RC_DIR)/include -I$(RC_DIR)/src -I$(WEBP_DIR) -o $@ $(APP_SRC) $(RC_OBJ) $(WEBP_OBJ) $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) -DGBADS_RA -I$(RC_DIR)/include -I$(RC_DIR)/src -I$(WEBP_DIR) -o $@ $(APP_SRC) $(RC_OBJ) $(WEBP_OBJ) $(if $(MACOS_SRC),$(OUT)/macos.o) $(LDFLAGS) $(LIBS)
+
+$(OUT)/gba-ds: $(if $(MACOS_SRC),$(OUT)/macos.o)
+
+$(OUT)/macos.o: src/macos.m src/macos.h src/config.h src/ui.h
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -fobjc-arc -c src/macos.m -o $@
 
 $(OUT)/rcheevos/%.o: $(RC_DIR)/src/%.c $(wildcard $(RC_DIR)/include/*.h)
 	@mkdir -p $(dir $@)
-	$(CC) $(OPTFLAGS) -std=gnu11 -I$(RC_DIR)/include -c $< -o $@
+	$(CC) $(OPTFLAGS) $(if $(DARWIN),-arch arm64 -mmacosx-version-min=$(MACOS_MIN)) -std=gnu11 -I$(RC_DIR)/include -c $< -o $@
 
 $(OUT)/libwebp/%.o: $(WEBP_DIR)/src/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(OPTFLAGS) -std=gnu11 -I$(WEBP_DIR) -c $< -o $@
+	$(CC) $(OPTFLAGS) $(if $(DARWIN),-arch arm64 -mmacosx-version-min=$(MACOS_MIN)) -std=gnu11 -I$(WEBP_DIR) -c $< -o $@
 
 # development tools (host only; need libpng)
 tools: $(OUT)/harness
 
 $(OUT)/harness: tools/harness.c tools/png.c $(CORE_SRC) src/logo.c src/*.h
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -o $@ tools/harness.c tools/png.c $(CORE_SRC) src/logo.c $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lpng -lpthread -lm
+	$(CC) $(CFLAGS) $(TOOLS_DARWIN) -o $@ tools/harness.c tools/png.c $(CORE_SRC) src/logo.c $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lpng -lpthread -lm $(if $(DARWIN),-lz -liconv -framework CoreFoundation)
 
 clean:
 	rm -rf build

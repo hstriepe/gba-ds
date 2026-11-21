@@ -67,6 +67,14 @@ bool ui_render_reset(void);
 /* ui.c's own textures let go, to be made again (after a wake) */
 void ui_textures_reset(void);
 void ui_layout(void);
+/* A window's size for a layout (single, span-v, span-h) at a scale of the GBA's screen */
+void ui_layout_window_size(const char* layout, int scale, int* w, int* h);
+/* The layout changed in a window (macOS: the second screen on or off,
+ * stacked or side by side): the window takes its shape at the scale it was
+ * at, and the screens are laid out again. */
+void ui_set_layout(const char* layout);
+/* The window at this scale for its layout (desktop) */
+void ui_window_scale(int scale);
 /* Call once per loop iteration: sway fixups, script ticks. */
 void ui_tick(void);
 uint64_t ui_ticks(void);

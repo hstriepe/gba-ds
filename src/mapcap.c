@@ -730,7 +730,9 @@ static void publish(MapCapture* mc, const char* err);
 static void* worker(void* arg) {
 	MapCapture* mc = arg;
 	/* the live game (and its audio) gets the CPU first */
-#ifndef __wasi__
+#if defined(__APPLE__)
+	pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0); /* (macOS: SYS_gettid is another call there) */
+#elif !defined(__wasi__)
 	setpriority(PRIO_PROCESS, (id_t) syscall(SYS_gettid), 10);
 #endif
 #ifdef __ANDROID__
