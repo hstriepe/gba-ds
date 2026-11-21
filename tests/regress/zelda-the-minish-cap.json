@@ -1,0 +1,83 @@
+{
+ "game": "The Legend of Zelda: The Minish Cap",
+ "rules": "docs/games/zelda-the-minish-cap.md",
+ "cases": [
+  {
+   "id": "mc-us-smiths-house",
+   "rom": "BZME",
+   "state": "zelda-the-minish-cap/us-smiths-house.ss",
+   "desc": "Smith's house at the start: no sword and no map yet",
+   "rules": ["MC-4"],
+   "shots": {"end": 480},
+   "checks": [
+    {"rule": "MC-4", "what": "the logo before Link has the map", "type": "no_log", "match": "map updated"}
+   ]
+  },
+  {
+   "id": "mc-us-north-field",
+   "rom": "BZME",
+   "state": "zelda-the-minish-cap/us-north-field.ss",
+   "desc": "North Hyrule Field after the festival: the area map, Link's marker and the red check mark",
+   "rules": ["MC-1", "MC-6"],
+   "shots": {"a": 400, "b": 412, "c": 424, "d": 436},
+   "golden": ["a"],
+   "checks": [
+    {"rule": "MC-1", "what": "a capture was shown", "type": "log", "match": "map updated"},
+    {"rule": "MC-6", "what": "the map holds still", "type": "same",
+     "a": {"shot": "a", "rect": [0, 0, 1024, 768]}, "b": {"shot": "b", "rect": [0, 0, 1024, 768]}, "frac": 0.0},
+    {"rule": "MC-6", "what": "the map holds still", "type": "same",
+     "a": {"shot": "a", "rect": [0, 0, 1024, 768]}, "b": {"shot": "c", "rect": [0, 0, 1024, 768]}, "frac": 0.0},
+    {"rule": "MC-6", "what": "the map holds still", "type": "same",
+     "a": {"shot": "a", "rect": [0, 0, 1024, 768]}, "b": {"shot": "d", "rect": [0, 0, 1024, 768]}, "frac": 0.0}
+   ]
+  },
+  {
+   "id": "mc-us-ezlo-talking",
+   "rom": "BZME",
+   "state": "zelda-the-minish-cap/us-north-field.ss",
+   "desc": "North Hyrule Field's map, then Ezlo talking in the Minish Woods: the last map stays, dimmed",
+   "rules": ["MC-4"],
+   "input": [[400, "LOAD:zelda-the-minish-cap/us-ezlo-talking.ss"]],
+   "shots": {"map": 380, "dimmed": 640},
+   "checks": [
+    {"rule": "MC-4", "what": "the map is dimmed, not replaced", "type": "differs",
+     "a": {"shot": "map", "rect": [0, 0, 1024, 768]}, "b": {"shot": "dimmed", "rect": [0, 0, 1024, 768]}, "frac": 0.5}
+   ]
+  },
+  {
+   "id": "mc-us-minish-woods",
+   "rom": "BZME",
+   "state": "zelda-the-minish-cap/us-minish-woods.ss",
+   "desc": "Minish-sized in the Minish Woods: Link's marker at the map's bottom edge, beside the woods' glow",
+   "rules": ["MC-1", "MC-6"],
+   "shots": {"end": 480},
+   "checks": [
+    {"rule": "MC-1", "what": "a capture was shown", "type": "log", "match": "map updated"}
+   ]
+  },
+  {
+   "id": "mc-us-deepwood-no-map",
+   "rom": "BZME",
+   "state": "zelda-the-minish-cap/us-deepwood-no-map.ss",
+   "desc": "Deepwood Shrine before its map: the rooms Link has been in",
+   "rules": ["MC-2"],
+   "shots": {"end": 480},
+   "checks": [
+    {"rule": "MC-2", "what": "a capture was shown", "type": "log", "match": "map updated"}
+   ]
+  },
+  {
+   "id": "mc-us-deepwood-map",
+   "rom": "BZME",
+   "state": "zelda-the-minish-cap/us-deepwood-no-map.ss",
+   "desc": "Deepwood Shrine before its map, then another room with it: the map is captured again, the whole floor",
+   "rules": ["MC-2", "MC-3"],
+   "input": [[400, "LOAD:zelda-the-minish-cap/us-deepwood-map.ss"]],
+   "shots": {"before": 380, "after": 700},
+   "checks": [
+    {"rule": "MC-3", "what": "a new room, a new map", "type": "differs",
+     "a": {"shot": "before", "rect": [0, 0, 1024, 768]}, "b": {"shot": "after", "rect": [0, 0, 1024, 768]}, "frac": 0.02}
+   ]
+  }
+ ]
+}

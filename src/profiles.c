@@ -6246,8 +6246,10 @@ static const MapProfile profiles[] = {
 		.settleMax = 150, .openWithin = 40, .stableFrames = 3, .maxDiff = 300,
 		.dimWhenUnavailable = true,
 		.crop_x = 0, .crop_y = 0, .crop_w = 240, .crop_h = 160,
-		/* the stone frame's left and right sides, the background beside it */
-		.probes = { { 24, 40, 0xCECECE }, { 216, 40, 0xE7DEDE }, { 4, 150, 0xFFF7A5 }, { 236, 150, 0xFFF7A5 } },
+		/* the yellow background left and right of the stone frame (the
+		 * frame's own greys swap sides on a dungeon map) and the black name
+		 * bar under the map, there once the menu has faded in */
+		.probes = { { 4, 60, 0xFFF794 }, { 4, 150, 0xFFF794 }, { 236, 150, 0xFFF794 }, { 30, 152, 0x000000 } },
 		.tolerance = 8,
 		/* on a map screen (4 area, 5 dungeon), faded in (pause menu step 2),
 		 * the game in its sub-task (gMain.substate 7) */
@@ -6269,8 +6271,10 @@ static const MapProfile profiles[] = {
 		/* the title's wordmark (sprites), not the sword's gem below it or
 		 * PRESS START */
 		.logo = { .wait = 1100, .layers = 0x10, .maxY = 94 },
-		/* Link's marker blinks: shown still, in its visible state (MC-6) */
-		.animFrames = 16, .animStep = 4, .mapStill = true, .stillPick = STILL_COVER,
+		/* Link's marker blinks: shown still, in its visible state; the red
+		 * check mark at its reddest; the Minish Woods glow, which can touch
+		 * Link's marker, at its brightest, the marker with it (MC-6) */
+		.animFrames = 16, .animStep = 4, .mapStill = true, .stillPick = STILL_RED,
 	},
 	{
 		.codes = { "AVSE" },

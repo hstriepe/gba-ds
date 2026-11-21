@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Releases | `BZME` USA |
-| Dumps | `BZME` cartridge `abcebbb1` |
+| Dumps | `BZME` cartridge `abcebbb1` (tested) |
 | Profile | `src/profiles.c`: the `BZME` entry |
 | Tests | `tests/regress/zelda-the-minish-cap.json` (`tools/regress.py zelda-the-minish-cap`) |
 | Status | in progress (branch `zelda-minish-cap`) |
@@ -16,22 +16,22 @@ Every game also follows the [general rules](README.md#general-rules) (GEN-1 to G
 
 **MC-1. Area map.** Once Link has the map (from the opening at the Picori Festival), the second screen shows the game's own MAP screen, the one START and then L / R open from the pause menu: the area Link is in, the parts he hasn't been to greyed out as the game shows them. The pause menu's lettering and prompts (the MAP tab, "Choose", the L / R buttons) and the map's cursor aren't shown; the frame round the map and the background behind it are.
 
-**MC-2. Dungeon map.** In a dungeon, once Link has its map, the second screen shows the game's dungeon map, as the pause menu's map screen shows it there, with the same parts left out as in MC-1.
+**MC-2. Dungeon map.** In a dungeon, the second screen shows the game's dungeon map, as the pause menu's map screen shows it there: the rooms Link has been in, and the whole floor once he has the dungeon's map. The same parts are left out as in MC-1, and the floor list's cursor as well.
 
 **MC-3. A new place, a new map.** When Link goes to another area or room, the second screen captures the map again, so Link's marker on it is where he is.
 
-**MC-4. When the map can't be opened.** Where the pause menu can't be opened (cutscenes, a message on screen, Ezlo talking, a dungeon without its map) the last map stays up, dimmed; before the first map (before Link has it), the logo.
+**MC-4. When the map can't be opened.** Where the pause menu can't be opened (cutscenes, a message on screen, Ezlo talking) the last map stays up, dimmed; before the first map (before Link has it), the logo.
 
 **MC-5. Logo at the menus.** At the title, the file menu and after the game is quit to it, the second screen shows the logo.
 
-**MC-6. Still, with Link's marker showing.** The map never animates, whatever `map_animations` says: Link's marker, which blinks on the game's map screen, is shown in its visible state.
+**MC-6. Still, with Link's marker showing.** The map never animates, whatever `map_animations` says: Link's marker, which blinks on the game's map screen, is shown in its visible state, and the red check mark that shows where to go next is at its reddest. The map's own animations (the Minish Woods glow) are held at their brightest.
 
 ## Not covered yet
 
 - Europe (`BZMP`) and Japan (`BZMJ`): no ROMs tested.
-- Dungeon maps (MC-2), Minish-sized areas and the Dark Hyrule Castle maps need states from the device.
+- The Dark Hyrule Castle maps and dungeons after Deepwood Shrine: no states yet.
 
 ## For the merge
 
-- Changelog: "The Legend of Zelda: The Minish Cap (USA): the second screen shows the area map, and in dungeons the dungeon map once Link has it."
+- Changelog: "The Legend of Zelda: The Minish Cap (USA): the second screen shows the area map, and in dungeons the dungeon map."
 - Wiki (`wiki/Supported-games.md`): a row for The Minish Cap (USA) and a section saying what the second screen shows (MC-1, MC-2, MC-4, MC-5).
