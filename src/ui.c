@@ -581,6 +581,10 @@ static int window_scale(void) {
 static void window_fit(int scale) {
 	if (nViews != 1 || !views[0].win) return;
 	if (SDL_GetWindowFlags(views[0].win) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) return;
+#ifdef __APPLE__
+	/* (macOS's own full screen: the layout changes inside it, the window keeps the display) */
+	if (macos_window_fullscreen(views[0].win)) return;
+#endif
 	int w, h;
 	ui_layout_window_size(cfg->layout, scale, &w, &h);
 	SDL_SetWindowSize(views[0].win, w, h);

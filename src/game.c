@@ -8164,7 +8164,6 @@ static void mac_layout(const char* layout) {
 
 /* A command from the menu bar (macos.m): as the hotkeys and the pause menu do it */
 static bool mac_command(int mc) {
-	static char lastDual[16] = "span-v";
 	bool forceMap = false; /* (a new map now: a state loaded, the second screen back) */
 	switch (mc) {
 	case MC_MENU:
@@ -8186,17 +8185,10 @@ static bool mac_command(int mc) {
 		menuOpen = false;
 		ui_osd("Game restarted");
 		break;
-	case MC_SECOND_SCREEN:
-		if (!strcmp(cfg->layout, "single")) {
-			mac_layout(lastDual);
-		} else {
-			snprintf(lastDual, sizeof(lastDual), "%s", cfg->layout);
-			mac_layout("single");
-		}
+	case MC_STACKED: /* (a toggle: stacked or one screen; the Mac has no side by side) */
+		mac_layout(strcmp(cfg->layout, "single") ? "single" : "span-v");
 		forceMap = true;
 		break;
-	case MC_STACKED: mac_layout("span-v"); forceMap = true; break;
-	case MC_SIDE_BY_SIDE: mac_layout("span-h"); forceMap = true; break;
 	case MC_SWAP: swap_screens(); break;
 	case MC_SHADER:
 		set_shader(cfg->shader != SH_OFF ? SH_OFF : cfg->shaderLast > SH_OFF && cfg->shaderLast < SH_COUNT ? cfg->shaderLast : SH_GRID);

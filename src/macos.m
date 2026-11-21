@@ -91,9 +91,20 @@ void macos_setup(Config* cfg, const char* resDir, char* dataDir, size_t n) {
 		snprintf(dataDir, n, "%s", data.fileSystemRepresentation);
 		/* no updates (the app is replaced as a whole) */
 		cfg->updateCheck = false;
-		/* the dual layout on a Mac: one window, the screens stacked */
-		if (!strcmp(cfg->layout, "auto") || !strcmp(cfg->layout, "dual")) snprintf(cfg->layout, sizeof(cfg->layout), "span-v");
+		macos_settle_layout(cfg);
 	}
+}
+
+void macos_settle_layout(Config* cfg) {
+	/* the dual layout on a Mac: one window, the screens stacked (no side by side) */
+	if (strcmp(cfg->layout, "single") && strcmp(cfg->layout, "span-v")) snprintf(cfg->layout, sizeof(cfg->layout), "span-v");
+}
+
+bool macos_window_fullscreen(SDL_Window* win) {
+	SDL_SysWMinfo wm;
+	SDL_VERSION(&wm.version);
+	if (!win || !SDL_GetWindowWMInfo(win, &wm) || wm.subsystem != SDL_SYSWM_COCOA) return false;
+	return (wm.info.cocoa.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
 }
 
 void macos_renderer_opaque(SDL_Renderer* ren) {
@@ -193,11 +204,8 @@ static NSString* app_name(void) {
 	}
 	if (item.action != @selector(command:)) return YES;
 	const char* lay = mcfg ? mcfg->layout : "single";
-	bool dual = strcmp(lay, "single") != 0;
 	switch (item.tag) {
-	case MC_SECOND_SCREEN: item.state = dual ? NSControlStateValueOn : NSControlStateValueOff; break;
-	case MC_STACKED: item.state = !strcmp(lay, "span-v") ? NSControlStateValueOn : NSControlStateValueOff; break;
-	case MC_SIDE_BY_SIDE: item.state = !strcmp(lay, "span-h") ? NSControlStateValueOn : NSControlStateValueOff; break;
+	case MC_STACKED: item.state = strcmp(lay, "single") ? NSControlStateValueOn : NSControlStateValueOff; break;
 	case MC_SHADER: item.state = mcfg && mcfg->shader != SH_OFF ? NSControlStateValueOn : NSControlStateValueOff; break;
 	}
 	return inGame;
@@ -253,9 +261,8 @@ void macos_menu_install(Config* cfg) {
 		add(game, @"Show Data Folder", @selector(dataFolder:), nil, 0, 0);
 
 		NSMenu* view = submenu(bar, @"View");
-		add(view, @"Second Screen", @selector(command:), @"d", cmd, MC_SECOND_SCREEN);
-		add(view, @"Stacked", @selector(command:), @"d", cmd | NSEventModifierFlagOption, MC_STACKED);
-		add(view, @"Side by Side", @selector(command:), @"d", cmd | NSEventModifierFlagShift, MC_SIDE_BY_SIDE);
+		/* (one toggle: the second screen stacked under the game, or one screen) */
+		add(view, @"Stacked", @selector(command:), @"d", cmd, MC_STACKED);
 		add(view, @"Swap Screens", @selector(command:), @"x", cmd | NSEventModifierFlagShift, MC_SWAP);
 		[view addItem:NSMenuItem.separatorItem];
 		add(view, @"LCD Shader", @selector(command:), @"g", cmd | NSEventModifierFlagShift, MC_SHADER);

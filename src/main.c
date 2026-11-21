@@ -183,6 +183,9 @@ int main(int argc, char** argv) {
 	snprintf(path, sizeof(path), "%s/hotkeys.cfg", cfg.stateDir);
 	config_load_file(&cfg, path);
 	config_parse_args(&cfg, argc, argv);
+#if defined(__APPLE__)
+	macos_settle_layout(&cfg); /* (prefs.cfg may hold a side-by-side layout from before) */
+#endif
 	emu_solar_level = cfg.solarLevel; /* (the sun sensor's reading, Boktai) */
 	if (cfg.overlayMode == OVM_LEGACY) {
 		/* overlays = top / both... from before v1.5 (the player's PNGs, which

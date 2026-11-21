@@ -41,7 +41,12 @@ void config_defaults(Config* c) {
 	c->customLogos = CL_PIXELATED;
 	c->rewind = true;
 	c->rewindSeconds = 30;
+#ifdef __APPLE__
+	/* (a Mac window or full screen: the picture on black, no bezel round it; the pause menu still has it) */
+	c->overlayMode = OVM_OFF;
+#else
 	c->overlayMode = OVM_GENERATED;
+#endif
 	c->overlays = OVL_BOTH;
 	c->bezelLogo = true;
 	strcpy(c->bezelInner, "1A1A1A");
