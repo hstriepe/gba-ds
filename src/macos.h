@@ -12,6 +12,10 @@
  *       GBA DS/              GBA DS's own data folder (states/, cheats/...)
  *       screenshots/
  *
+ * A builder can name another folder than "mGBA Games" with game.json's
+ * dataRoot: Yoshi (hstriepe's multi-system successor of GB App Builder)
+ * writes "Yoshi", where its own game apps keep their data.
+ *
  * The plain GBA DS.app keeps it in ~/Library/Application Support/GBA DS/.
  */
 #ifndef GBADS_MACOS_H

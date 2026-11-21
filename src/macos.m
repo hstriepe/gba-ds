@@ -51,11 +51,14 @@ void macos_setup(Config* cfg, const char* resDir, char* dataDir, size_t n) {
 		if (![game isKindOfClass:NSDictionary.class]) game = nil;
 		NSString* romFile = [game[@"romFile"] isKindOfClass:NSString.class] ? game[@"romFile"] : nil;
 		NSString* folder = [game[@"dataFolder"] isKindOfClass:NSString.class] ? game[@"dataFolder"] : nil;
+		/* the builder's folder in Application Support: GB App Builder's "mGBA Games", or game.json's
+		   dataRoot (Yoshi writes "Yoshi") */
+		NSString* root = [game[@"dataRoot"] isKindOfClass:NSString.class] && [game[@"dataRoot"] length] && ![game[@"dataRoot"] containsString:@"/"] ? game[@"dataRoot"] : @"mGBA Games";
 
 		NSString* base;  /* the app's own folder */
 		NSString* data;  /* GBA DS's data folder */
 		if (romFile && folder.length) {
-			base = [[support stringByAppendingPathComponent:@"mGBA Games"] stringByAppendingPathComponent:folder];
+			base = [[support stringByAppendingPathComponent:root] stringByAppendingPathComponent:folder];
 			data = [base stringByAppendingPathComponent:@"GBA DS"];
 			if (!cfg->rom[0]) snprintf(cfg->rom, sizeof(cfg->rom), "%s", [[res stringByAppendingPathComponent:@"Game"] stringByAppendingPathComponent:romFile].fileSystemRepresentation);
 			/* battery saves: where the game's GB Player app keeps them (the same file) */

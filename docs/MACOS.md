@@ -33,7 +33,7 @@ The software renderer leaves flag bits in each pixel's top byte. On Linux the di
 ## Running
 
 - **GBA DS.app** opens the game list. ROMs go in `~/Library/Application Support/GBA DS/roms` unless `rom_dir` says otherwise, and that folder is also the data folder. To run a game directly: `GBA\ DS.app/Contents/MacOS/gba-ds GAME.gba` (any option from `--help`).
-- **A game's app** (GB App Builder) has `Resources/Game/game.json` (`romFile`, `dataFolder`) and the ROM beside it, and starts straight into the game. Its data folder is `~/Library/Application Support/mGBA Games/<dataFolder>/GBA DS`. The battery save goes in `<dataFolder>/saves`, or `savegamePath` from that folder's `config.ini`, else from `Resources/Game/defaults.ini`. That is the same file GB App Builder's GB Player apps use. `Resources/gba-ds.cfg` holds the builder's starting `layout`.
+- **A game's app** (GB App Builder) has `Resources/Game/game.json` (`romFile`, `dataFolder`) and the ROM beside it, and starts straight into the game. Its data folder is `~/Library/Application Support/mGBA Games/<dataFolder>/GBA DS`, or `Yoshi/<dataFolder>/GBA DS` when `game.json` has `"dataRoot": "Yoshi"` (apps built by Yoshi, GB App Builder's multi-system successor; any `dataRoot` names the folder in Application Support). The battery save goes in `<dataFolder>/saves`, or `savegamePath` from that folder's `config.ini`, else from `Resources/Game/defaults.ini`. That is the same file the builder's own (GB Player or Yoshi Player) apps use. `Resources/gba-ds.cfg` holds the builder's starting `layout`.
 - **Layouts:** a window shows `single`, `span-v` (stacked) or `span-h` (side by side). `auto` and `dual` become `span-v`. View › Second Screen switches between `single` and the last two-screen layout.
 
 ## Testing

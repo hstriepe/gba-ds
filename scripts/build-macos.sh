@@ -10,7 +10,7 @@
 #
 # The app runs the game list (ROMs in ~/Library/Application Support/GBA DS/roms
 # unless rom_dir says otherwise), or a game: GBA\ DS.app/Contents/MacOS/gba-ds GAME.gba.
-# GB App Builder (Mac-mgba) uses it as the template for a game's own app,
+# GB App Builder (Mac-mgba) and Yoshi use it as the template for a game's own app,
 # with the game in Contents/Resources/Game/ (src/macos.h).
 set -euo pipefail
 cd "$(dirname "$0")/.."
