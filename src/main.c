@@ -1,7 +1,8 @@
 /* GBA DS: a GBA emulator for dual-screen handhelds that keeps the game's own
  * map on the second screen.
  *
- *   library.c  game list (rescans the ROM folder every time it opens)
+ *   library.c  game list (the ROM folder is scanned, what it learns about each ROM is cached,
+ *              and the list is kept while no folder has changed)
  *   game.c     play session, pause menu, auto save/resume
  *   mapcap.c   map capture with a shadow emulator core; profiles.c per game
  *   ui.c       windows, screens, touch/buttons, drawing
@@ -21,6 +22,7 @@
 #include "i18n.h"
 #ifdef __wasi__
 #include "mapcap.h"
+#include "climb.h"
 #endif
 #include "emu.h"
 #include "profiles.h"
@@ -80,6 +82,8 @@ int main(int argc, char** argv) {
 		const char* t = getenv("GBADS_CAPTURE_TIGHT");
 		return mapcap_web_serve(argv[argc - 1], getenv("GBADS_CAPTURE_SERVE"), t && *t == '1');
 	}
+	/* the web player's climb worker: GBADS_CLIMB_SERVE=CODE, the ROM last (climb.c) */
+	if (getenv("GBADS_CLIMB_SERVE") && argc > 1) return climb_web_serve(argv[argc - 1], getenv("GBADS_CLIMB_SERVE"));
 #endif
 	for (int i = 1; i < argc; ++i) {
 		if (!strcmp(argv[i], "--version")) {
@@ -90,9 +94,8 @@ int main(int argc, char** argv) {
 		 * game (a profile for its code), 1 if not, 2 if it can't be read
 		 * (BananaOS's banana-play.sh: other games go to RetroArch) */
 		if (!strcmp(argv[i], "--supported") && i + 1 < argc) {
-			uint8_t h[0xC0];
-			if (!emu_rom_header(argv[i + 1], h, sizeof(h))) return 2;
-			char code[5] = { (char) h[0xAC], (char) h[0xAD], (char) h[0xAE], (char) h[0xAF], 0 };
+			char code[5];
+			if (!emu_rom_file_code(argv[i + 1], code)) return 2;
 			bool yes = profile_find(code) != NULL;
 			printf("%s: %s\n", code, yes ? "supported" : "not supported");
 			return yes ? 0 : 1;
@@ -120,7 +123,8 @@ int main(int argc, char** argv) {
 	}
 	/* GBADS_HOME: the app's folder when the executable runs from a copy
 	 * elsewhere (launch.sh, where the card won't run programs) */
-	if (getenv("GBADS_HOME") && getenv("GBADS_HOME")[0]) snprintf(exeDir, sizeof(exeDir), "%s", getenv("GBADS_HOME"));
+	const char* homeOverride = getenv("GBADS_HOME");
+	if (homeOverride && homeOverride[0]) snprintf(exeDir, sizeof(exeDir), "%s", homeOverride);
 #ifdef __APPLE__
 	/* the app bundle's Resources (gba-ds.cfg, gamecontrollerdb.txt; a game's
 	 * app has the game in Game/): the working folder too, as Finder starts
@@ -136,8 +140,9 @@ int main(int argc, char** argv) {
 	/* defaults < gba-ds.cfg < states/prefs.cfg (choices made in the menu),
 	 * library.cfg and hotkeys.cfg (the game list's Settings) < command line */
 	char path[1100];
-	if (getenv("GBADS_CONFIG")) {
-		config_load_file(&cfg, getenv("GBADS_CONFIG"));
+	const char* configOverride = getenv("GBADS_CONFIG"); /* (the web player and State Saver: this one file, no data-folder.cfg) */
+	if (configOverride) {
+		config_load_file(&cfg, configOverride);
 	} else {
 		snprintf(path, sizeof(path), "%s/gba-ds.cfg", exeDir);
 		config_load_file(&cfg, path);
@@ -165,13 +170,22 @@ int main(int argc, char** argv) {
 	macos_setup(&cfg, exeDir, dataDir, sizeof(dataDir));
 #elif !defined(__ANDROID__) && !defined(__wasi__)
 	snprintf(path, sizeof(path), "%s/data-folder.cfg", exeDir);
-	data_dir_setup(exeDir, getenv("GBADS_CONFIG") ? NULL : path, cfg.dataDir, false, dataDir, sizeof(dataDir));
+	data_dir_setup(exeDir, configOverride ? NULL : path, cfg.dataDir, false, dataDir, sizeof(dataDir));
 #endif
 	if (strcmp(dataDir, exeDir) || data_dir_note()[0])
 		fprintf(stderr, "data folder: %s%s%s\n", dataDir, data_dir_note()[0] ? " - " : "", data_dir_note());
 	if (!cfg.assetDir[0]) snprintf(cfg.assetDir, sizeof(cfg.assetDir), "%s", dataDir);
 	if (!cfg.patchDir[0]) snprintf(cfg.patchDir, sizeof(cfg.patchDir), "%s/patches", cfg.assetDir); /* GEN-9 */
 	if (!cfg.stateDir[0]) snprintf(cfg.stateDir, sizeof(cfg.stateDir), "%s/states", dataDir);
+	/* a first install: no states folder yet, or an empty one (every run of GBA DS leaves its caches and
+	 * settings there); the language question is asked, once (issue #92) */
+	bool firstInstall = true;
+	{
+		DIR* d = opendir(cfg.stateDir);
+		struct dirent* e;
+		while (d && firstInstall && (e = readdir(d)) != NULL) firstInstall = e->d_name[0] == '.';
+		if (d) closedir(d);
+	}
 	mkdirs(cfg.stateDir);
 	snprintf(path, sizeof(path), "%s/prefs.cfg", cfg.stateDir);
 	/* (map_interval and show_fps were left to gba-ds.cfg until v1.5.4; the game list's Settings can change them now) */
@@ -186,6 +200,17 @@ int main(int argc, char** argv) {
 #if defined(__APPLE__)
 	macos_settle_layout(&cfg); /* (prefs.cfg may hold a side-by-side layout from before) */
 #endif
+	if (firstInstall && library_language_ask_built()) {
+		/* kept as pending in prefs.cfg, so a first run that never reaches the game list or the pause menu asks next time */
+		cfg.languageAsked = false;
+		snprintf(path, sizeof(path), "%s/prefs.cfg", cfg.stateDir);
+		const char* kv[1][2] = { { "language_asked", "0" } };
+		config_kv_update(path, "# written by gba-ds's menus; overrides gba-ds.cfg", 1, kv);
+		fprintf(stderr, "first install: the language will be asked\n");
+	} else if (!cfg.languageAsked && !library_language_ask_built()) {
+		cfg.languageAsked = true; /* (pending from a build that asks, now run by one that doesn't) */
+	}
+	library_bios_apply(&cfg);
 	emu_solar_level = cfg.solarLevel; /* (the sun sensor's reading, Boktai) */
 	if (cfg.overlayMode == OVM_LEGACY) {
 		/* overlays = top / both... from before v1.5 (the player's PNGs, which
@@ -207,6 +232,8 @@ int main(int argc, char** argv) {
 #endif
 
 #if defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBC__)
+	void* warm[1];
+	backtrace(warm, 1); /* (the first call loads libgcc and may allocate: not inside a crash) */
 	signal(SIGSEGV, on_crash);
 	signal(SIGBUS, on_crash);
 	signal(SIGILL, on_crash);

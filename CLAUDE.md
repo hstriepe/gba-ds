@@ -128,9 +128,13 @@ it lives here:
   so it needs no run of its own and CI starts none. If anything else has to
   change after the full run, run the full suite again on the new last
   commit.
-- Test builds for the device: `dist/gba-ds-vX.Y.Z-dev-linux-aarch64.zip`,
-  sent to the owner after each change; Android test APKs are the artifacts
-  of the workflow runs on `android` / `dev` (link the run).
+- Test builds for the device, sent to the owner after each change: a build
+  of `dev` itself (the final dev build, a release's preparation) is the plain
+  `dist/gba-ds-vX.Y.Z-dev-linux-aarch64.zip`; **a build of any other branch
+  is a side build** (see "Side builds" below): a test build for an issue, a
+  topic branch or a game branch never replaces the owner's GBA DS install.
+  Android test APKs are the artifacts of the workflow runs on `android` /
+  `dev` (link the run).
 - **Final dev build** (the last test zip before a release; the owner asks
   for it once the release's games and changes are all merged): a checklist of
   what to confirm on the device, and a zip that carries the test save states.
@@ -157,9 +161,12 @@ it lives here:
      fixtures have; say in the checklist where a region has none.
      `tools/make_device_states.py [--games a,b]` makes `build/device-states/`
      (`<name>.slotN.state` and `TEST-STATES.txt`, stopping on a missing
-     fixture or a name that isn't a dump); `GBADS_DEVICE_STATES=build/device-states
+     fixture or a name that isn't a dump); `GBADS_DEVICE_STATES=build/device-states GBADS_LANG_ASK=1
      GBADS_WEB_WORK=<scratch>/wasm scripts/build-rocknix.sh` puts them in the
-     zip's `states/` folder (dev versions only). They replace those slot
+     zip's `states/` folder (dev versions only); `GBADS_LANG_ASK=1` makes it
+     ask the language on a first install, as the release will (GEN-18: the
+     owner's rule, Nov 25, 2026, is that only builds a main session makes for
+     a release ask; other test builds don't). They replace those slot
      files on the owner's install; say so, and that a state shows only when
      the ROM file is named as the game is.
   4. **Tests**: as for any test build, the cases the changes can affect
@@ -216,7 +223,8 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   from the latest `dev` and pushes it (sessions can create branches; only the
   owner can delete them, after the merge). If it already exists, carry on on
   it, merging `dev` in first.
-- **Test builds are side builds:** `GBADS_SIDE=<slug>
+- **Test builds are side builds** (the general rule is "Side builds" below):
+  `GBADS_SIDE=<slug>
   GBADS_WEB_WORK=<scratch dir>/wasm scripts/build-rocknix.sh` gives
   `dist/gba-ds-vX.Y.Z-dev-<slug>-linux-aarch64.zip`. It unzips into the Ports
   folder beside the main install: its own folder (`gba-ds-<slug>/`) and its
@@ -239,7 +247,7 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   them). Don't approve goldens of other games' or shared cases from the
   branch (that broke `dev`'s cases until the merge): if the game's change
   alters a shared picture, give it a new shot name instead. Keep to the game's profile and its own composer: a change to shared
-  code (`game.c`, `emu.c`, `mapcap.c`, `logo.c`, other games' profiles) is
+  code (`game.c`, `second.c`, `hud.c`, `twins.c`, `emu.c`, `mapcap.c`, `logo.c`, other games' profiles) is
   for `dev`. If the game really needs one, keep it small, say so in the
   commit message, and say at the merge which shared-code cases have to run.
 - **Don't edit CHANGELOG.md, README.md or the wiki's game list on the
@@ -257,10 +265,56 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   at release). Build a normal test zip from `dev` and send it. Tell the
   owner the branch can be deleted.
 
+### Side builds: every build of a branch other than `dev`
+
+The owner's rule (Nov 21, 2026): **a test build made to address a specific
+issue, or any build based on a branch other than `dev`, is a side build**: its
+ZIP installs alongside GBA DS itself, in the same fashion as an individual
+game's branch (above), and is never a plain build. Only `dev` (the final dev
+build, the release) gives the plain `gba-ds-vX.Y.Z-dev-linux-aarch64.zip` /
+release zip, which replaces the main install.
+
+- **Command:** `GBADS_SIDE=<slug> GBADS_WEB_WORK=<scratch dir>/wasm
+  scripts/build-rocknix.sh`, output `dist/gba-ds-vX.Y.Z-dev-<slug>-linux-aarch64.zip`.
+  `<slug>` is the branch's name in lower-case with slashes made dashes
+  (`issue-61`, `menu-brightness`, `release-v1-5-6-final-dev-build`), or
+  `game/<slug>`'s own slug. A game branch: as above (the game's name and its
+  releases only). **Any other branch** has no rules file, so the build keeps
+  every game in the list and names the Ports entry "GBA DS <slug> testing"
+  (`GBADS_SIDE_NAME="Menu brightness"` for a nicer name).
+- **What that gives the owner:** the folder `gba-ds-<slug>/` and its own Ports
+  entry beside the main install, with its own settings, states and logos; the
+  system's battery saves are shared with the main install. The version reads
+  `X.Y.Z-dev+<slug>`, there are no updates and no EmulationStation / BananaOS
+  integration. Say in the note that it is a side build, and that it can be
+  deleted (folder and Ports entry) once the issue or branch is merged.
+- **It doesn't ask the language on a first install** (GEN-18): only releases
+  and builds with `GBADS_LANG_ASK=1` (the final dev build) do, so leave it out.
+- **Unzipping it can't touch the main install**, so the test note doesn't need
+  "back up your settings" for it. The final dev build, built from `dev`, still
+  replaces the install (and its test states replace slot files: say so).
+- **Android** test builds are the workflow's APKs and are unchanged by this.
+
 ## Building
 
 - Desktop (for development and tests): `scripts/setup-host.sh` once (fetches
   and builds mGBA and SDL2 into `deps/`), then `make` and `make tools`.
+- `make module-check`: the second-screen module (`MODULE_SRC`) and the core
+  it runs on (`CORE_SRC`, `src/logo.c`) built with no SDL include path, linked
+  with no SDL library and run (`tools/module_check.c`), so they stay what a
+  libretro core can compile (discussion #75). CI runs it on every push that
+  touches `src/` (`.github/workflows/module.yml`, mGBA only, no SDL). A module
+  file that includes SDL, calls it, or calls back into the app (`game.c`,
+  `ui.c`) fails it. It then runs `tools/module_settings.py`: `docs/LIBRETRO.md`
+  lists the `Config` fields and emu.h `extern`s the module reads (a core's
+  options, with their defaults), and a read the list lacks, or a row nothing
+  reads, fails it.
+- `make tools` also builds `build/host/second-driver` (tools/second_driver.c,
+  no SDL): the module's reference driver, which replays a trace of the app's
+  calls into the module (`GBADS_MODULE_TRACE`) with only the module, for
+  regress.py's `"driver": true` cases and `--driver` (docs/TESTING.md);
+  `GBADS_DRIVER_SAVE_MEM=1` / `GBADS_DRIVER_SERIALIZE=1` make it use the save and
+  states in memory as a core would. `docs/LIBRETRO.md` is the core writer's guide.
 - Device: `scripts/build-rocknix.sh` (fetches an aarch64 toolchain, mGBA
   and SDL2 into `deps/`) produces the release zip in `dist/`.
 - Android: `scripts/build-android.sh` (needs the Android SDK/NDK, so it
@@ -273,12 +327,18 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   `src/fonts_data.c` by `tools/embed_fonts.py`) with stb_truetype
   (`src/textfont.c`): `ui_label` (bold, centred), `ui_font_text` /
   `ui_font_wrap` (TF_BOLD or TF_BODY, any UTF-8). New text is just a string;
-  write it in normal sentence case. The pixel font (`ui_text`) is left for
-  the FPS counter and version number.
+  write it in normal sentence case. The old pixel font (`ui_text`, capitals
+  only) is left for the FPS counter (and the version number where the quick
+  bar's pixel font lacks a character); the game list's GitHub link, version
+  number and ROM path strip (GEN-21) use the quick bar's Jost-like pixel font
+  (`pixfont.h`, library.c `pix_draw`).
 - Generated sources: `src/fonts_data.c` (above), `src/brand_data.c` (artwork
   only: the logo, button prompts and flags; `tools/make_brand.py` needs the
   Futura Bold Italic and Gamecuben fonts, which aren't in the repo: ask the
-  owner for them), `src/logo_masks.c` (`tools/make_logo_masks.py`) and
+  owner for them), `src/logo_masks.c` (`tools/make_logo_masks.py`), `src/upscale_shaders.c`
+  (`tools/embed_shaders.py`: the Scaling filter's upscalers, mGBA's shader
+  packs in `third_party/mgba-shaders`, run by `src/upscale.c` on SDL's
+  OpenGL ES context; issue #89) and
   `src/dumps_data.h` with the rules files' Dumps rows (`tools/make_dumps.py
   --dat DAT`: every official dump of each release by CRC32, from No-Intro's
   list in libretro-database (fetched with git, see the tool), the fixtures'
@@ -344,7 +404,7 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   `poke ADDR LEN VAL`, `io OFFSET N` (I/O registers), `dumpram NAME`, `layershot NAME` (each BG layer and
   OBJ alone), `map NAME` (run a map capture), `logo NAME`. It writes the
   game's battery save beside the ROM (`ROM.sav`): don't run it on the fixtures'
-  ROMs in place, or delete those `.sav` files after (never commit them). `HARNESS_SAVE=PATH` runs it with that battery save instead (written to as the game saves; `tools/pokemon/saves.py state` uses it).
+  ROMs in place, or delete those `.sav` files after (never commit them). `HARNESS_BIOS=FILE` runs it with that GBA BIOS (the fixtures' `bios/gba_bios.bin`, issue #78), `HARNESS_SAVE=PATH` with that battery save instead (written to as the game saves; `tools/pokemon/saves.py state` uses it).
 - **Players' bug reports** (the quick bar's bug button or Extras > Submit
   a Bug Report, `bug-reports/*.zip`): `GAME-DATE-info.txt` (the player's note, typed on the keyboard that comes up after the button, if any; device, system,
   screens, settings, the second screen's state, the last 48 KB of the log
@@ -429,7 +489,7 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   per release.
   - *Game work* (a new game, or compatibility work on one): the game's own
     cases, including new ones for its new rules, plus the cases of any
-    shared code the work changed (`game.c`, `emu.c`, `mapcap.c`, `logo.c`,
+    shared code the work changed (`game.c`, `second.c`, `hud.c`, `emu.c`, `mapcap.c`, `logo.c`,
     `ui.c`, shared parts of `profiles.c`...).
   - *GitHub issues and PRs*: only the cases that involve shared code the
     fix changed; a fix that touches none runs none.
@@ -444,7 +504,7 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   readable form: per game, the files and functions it runs) maps each
   function of `src/` to the games whose cases execute it, from a gcov run
   of every game (`tools/regress_deps.py`). `--changed` reads it, so a
-  change inside `game.c`'s `update_tall` picks the pinball games, not all
+  change inside `twins.c`'s `update_tall` picks the pinball games (once the map is measured with twins.c; until then the file is unknown to it and picks every game), not all
   fifty-odd. A change the map can't place (outside any function, a new
   function, a header, a file it doesn't know) picks every game that runs
   the file, or every game: never fewer. `tools/regress_deps.py show
@@ -461,8 +521,17 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   (and the releases tested only on their logo). `--changed` runs only the
   games a change touches (docs/TESTING.md); GitHub runs that on every push
   to dev / android / game/* (`.github/workflows/regress.yml`; the full
-  suite only for "Run workflow" with "full", once per release). `GBADS_SYNC=1`
-  makes captures and logo extraction run inline, so runs are exact; the app
+  suite only for "Run workflow" with "full", once per release). The
+  workflow has time limits (`select` 10 min, a shard 45, the fixtures'
+  download two tries of 5 min, the cases 30): a shard that fails on a time
+  limit with no failing case is a download, not the code: re-run the failed
+  jobs (`gh api -X POST repos/kyannon/gba-ds/actions/runs/RUN_ID/rerun-failed-jobs`),
+  and if it fails again, run that shard locally (`python3 tools/regress.py
+  GAMES --shard N/K`); docs/TESTING.md, "On GitHub". `GBADS_SYNC=1`
+  makes captures and logo extraction run inline, so runs are exact (in the module and
+  core it sets emu.c's `emu_sync_work`, which a core sets with `emu_set_sync_work`: the map
+  captures, logo extraction, the profiles' own workers and the climb copy's pictures on
+  the caller's thread; the app's own threads read `GBADS_SYNC` themselves); the app
   draws with SDL's software renderer (`SDL_RENDER_DRIVER=software`, set by
   regress.py), the same on every machine (through Mesa's OpenGL, blended
   text came out a shade apart from GitHub's runners). A failing case prints
@@ -497,13 +566,34 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   `emu_hud_band`, also the layers whose BGxCNT has given values on a line:
   Advance Wars' conversations). The harness has `split BGMASK PRIO` /
   `split off` and `hudshot NAME`.
+  Widescreen patches (docs/WIDESCREEN.md, rules WS-n; merged Nov 27, 2026, v1.6.5): a
+  patch's 32-byte marker `GBADS-WIDESCREEN` in the ROM as played (`emu_wide_find`)
+  makes `emu_wide_on` hook the game core's renderer like the HUD split and feed two
+  more software renderers looking a margin to each side (text BGs by mGBA's layer
+  offsets, sprites by their own moved OAM copy, affine reference points and window
+  edges moved); `emu_wide_compose` puts the margins round the frame game.c shows
+  (`game_tex_*`; `game_scale` keeps the picture's shape). `GBADS_WIDE=16:9` forces it
+  on any game (for writing a patch); the web player's wide view (`pack.py --wide`,
+  published at /wide; docs/WEB-PLAYER.md) does it from its bar while the game runs
+  (`web_wide` -> game.c `wide_force_apply` -> `emu_wide_set`). `tools/widescreen.py` makes the marker and
+  patches; `tools/widetest/build.py` the test ROM (ZWSE) and its patches. GBA DS's
+  own patches live in `widescreen/` (never in a release; `index.txt` from
+  `tools/widescreen.py index`); `src/widedl.c` fetches that list once a run (raw
+  GitHub, branch `GBADS_WIDE_REF`: main, dev for -dev builds, a side build's own;
+  `GBADS_WIDE_URL` overrides) and downloads a patch, SHA-256 checked; the Patches
+  menu offers the one for each screen's shape (`PR_DOWNLOAD`), and one widescreen
+  patch is on at a time (`patch_wide_alone`).
   State files (issue #39): loading (and `emu_state_file_kind` /
   `_rom_crc` / `_get_extra`) takes mGBA's own files and RetroArch's /
-  BananaFront's (`RASTATE`, RZIP-compressed or not, its mGBA core's bytes in
+  BananaFront's (`RASTATE`, RZIP-compressed (zlib, or zstd since issue #78: the
+  vendored decoder `third_party/rzstd`) or not, its mGBA core's bytes in
   the MEM block); `emu_state_save_file_as` writes either, with GBA DS's
-  second-screen block (EXTDATA_GBADS) inside the mGBA bytes. Save States
+  second-screen block (EXTDATA_GBADS) inside the mGBA bytes; `emu_state_save_mem` /
+  `_load_mem` / `emu_state_mem_get_extra` are the same in memory (a libretro core's
+  serialize), and `emu_save_memory` gives the game its battery save in a buffer
+  (`RETRO_MEMORY_SAVE_RAM`; docs/LIBRETRO.md). Save States
   shared with RetroArch (`state_folder = retroarch`, game list Settings >
-  Save States, Linux): paths.c `retroarch_state_dir` works out RetroArch's
+  Save States, Linux and, since issue #111, Android: docs/ANDROID.md): paths.c `retroarch_state_dir` works out RetroArch's
   folder from its retroarch.cfg as RetroArch does (ROCKNIX: setsettings.sh's
   `/storage/roms/savestates/<system>`), game_paths points slots 0-9 and the
   auto state at `.state`, `.state1`-`.state9`, `.state.auto` there
@@ -527,15 +617,16 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   map, screen and memory probes, crops, captureHide/underHide sprite rules,
   logo extraction, regional variants (`variants[]` + patch functions), and
   for logo-only games (Tony Hawk's Pro Skater 2) the `snap` screen copy and
-  `controls` four-face layout (Super Mario Advance 2: `controls.snes`, with the camera pan poke done in game.c's run_frame), (Mario Kart; Super Mario Advance 2 in levels, beside its map capture) the `hud` split and when it's on. Pokémon Pinball has `tall`: the table over both screens as one tall view (game.c update_tall), its top row min(the game's view, rows - 320): the top screen the game as it is while that's its view, else a copy held at rows - 320 with the game's screen-fixed things laid over it (BG0 and the sprites found fixed, drawn by the HUD split: emu_hud_keep_exact); the bottom screen a second copy held 160 rows below the view's top (twins[], run_frame: every frame each copy is taken from the game's state from before the frame before, held at its row (camera stores NOPed, its own pans compensated, twin_jump) and run that frame and this one, on worker threads beside the game: a copy left on its own fell behind the game's logic); sprites alike the game's hidden only when fixed to the screen or wrapped round (twin_hide); paused, the Mart or a message: the game's whole screen on the bottom one (PP-11). See docs/PINBALL.md. Sonic Pinball Party uses the same with `tall.live.carry` (its camera is a row, its table tiles stream through a vblank queue): each copy keeps its own BG0 tile ring, scroll vars and queued ring copies from its last frame (carry_take / carry_put) and walks its camera to its row; the game's own picture is used wherever it has the rows; docs/games/sonic-pinball-party.md has its addresses, tools/scout/sjump.c the experiment. A compilation with its own RAM per game (Game Boy Wars Advance 1+2, `BGWJ`) has `pick`: game.c's ss_switch sets the second screen up again for the variant it names (BGW1, BGW2). Other profile switches: `logoIf` / `logoIfOr` (the logo while they match,
+  `controls` four-face layout (Super Mario Advance 2: `controls.snes`, with the camera pan poke done in game.c's run_frame), (Mario Kart; Super Mario Advance 2 in levels, beside its map capture) the `hud` split and when it's on. Pokémon Pinball has `tall`: the table over both screens as one tall view (twins.c update_tall), its top row min(the game's view, rows - 320): the top screen the game as it is while that's its view, else a copy held at rows - 320 with the game's screen-fixed things laid over it (BG0 and the sprites found fixed, drawn by the HUD split: emu_hud_keep_exact); the bottom screen a second copy held 160 rows below the view's top (twins[] in twins.c, driven from game.c's run_frame by twins_before / twins_second_start / twins_after: every frame each copy is taken from the game's state from before the frame before, held at its row (camera stores NOPed, its own pans compensated, twin_jump) and run that frame and this one, on worker threads beside the game: a copy left on its own fell behind the game's logic); sprites alike the game's hidden only when fixed to the screen or wrapped round (twin_hide); paused, the Mart or a message: the game's whole screen on the bottom one (PP-11). See docs/PINBALL.md. Sonic Pinball Party uses the same with `tall.live.carry` (its camera is a row, its table tiles stream through a vblank queue): each copy keeps its own BG0 tile ring, scroll vars and queued ring copies from its last frame (carry_take / carry_put) and walks its camera to its row; the game's own picture is used wherever it has the rows; docs/games/sonic-pinball-party.md has its addresses, tools/scout/sjump.c the experiment. DK: King of Swing (logo-only) has `climb` (climb.c, second.c `update_climb`, run from `second_step`): in a level the game on the bottom screen and the level above it on the top, drawn by one copy of the game taken from its state every frame with its camera rows lowered 160 and its camera code patched (the profile's `patch`, re-applied with `emu_state_patch32` for IWRAM code), run on its own thread (in step with the game on one core, its pace dropping when the device can't keep up: `climb_pace`); the web player runs it in a worker of its own (docs/WEB-PLAYER.md). `pinball_live = 0` turns it off. A compilation with its own RAM per game (Game Boy Wars Advance 1+2, `BGWJ`) has `pick`: game.c's ss_switch sets the second screen up again for the variant it names (BGW1, BGW2). Other profile switches: `logoIf` / `logoIfOr` (the logo while they match,
   map and HUD kept for after; Super Mario Advance 4's World-e castle hall;
   the logo stays until a new HUD picture is drawn, at most a second),
   `hud.freeze` (the HUD picture held as it is while they match: SMA4's
   status bar sliding off), `hud.offAfter` (the HUD off from when they match
   until `on[0]` stops: Superstar Saga's results and level-ups, to the
-  battle's end). Adding a game mostly means a profile.
+  battle's end). A profile whose `composePages` gives pages that turn on a timer (a status screen's three pages, the party's members) sets `pages` (not a marker's blinking frames: they restart with each capture, pages keep their place); it is also what a Toggle row `pages` means (GEN-14), and toggle.c's `second_page()` is the one place that says which page is up. Adding a game mostly means a profile.
+- **The second-screen module**, moved out of game.c without SDL so a libretro core can call it as the app does (discussion #75; built on the branch `libretro-core`, merged into `dev` Nov 27, 2026, its full regression run green; every step in the project's `claude/discussion-75-extraction-log.md`; `docs/LIBRETRO.md` is the guide for the core, which Davey-Hughes writes): `second.c` / `second.h` (its state, `SecondState sec`: the capture's pictures, the refresh, the still, the screen copy, the climb view, the toggle's state; and its calls), `hud.c` / `hud.h` (the HUD split and the fights' picture, `HudState hud`), `twins.c` (the Pinball copies and the tall view's composer, `update_tall`, handed the app's state in a `TallEnv`), `toggle.c` (the contextual toggle's state machine and `second_page()`), `workers.c` (the copies' worker threads), `rgba.c` (`rgba_resample`, also ui.c's) and `clamp.h` (SDL's own min / max / clamp macro text, so moved code computes exactly as before: they're type-generic, int stand-ins truncated the HUD's float scaling). What a core calls, in order (tools/second_driver.c is the reference): set `sec.emu / cfg / debug / romPath`, `sec.hooks` (present, presentGba, logoLoad, logoFree) and `hud.hooks` (presentHud, presentCombat, hasCombat, saveBmp); open the game (`emu_open` with its battery save, `profile_set_rom`; `emu_set_sync_work(true)` for exact runs with no threads of the module's or the core's own for that work); `second_game_start()`, `second_open(rom, code, screens)`, a first state if any, `second_loop_start()`; each frame `second_frame_start()`, the game's frame through `second_run_frame(keys)` (the copies run around it), `second_step(screens)`, then `second_shown(&dim)` says which picture the second screen shows; a state load: `second_jump()`, `second_state_loaded(block, n)` (GBA DS's block, put back at the next frame), `second_new_subject()`; a restart: `emu_reset`, `second_jump()`, `second_restarted()`; the logo changed (finished extracting, or switched): `second_logo_changed()`; `second_state_save` with states; `second_idle_picture` / `logo_draw` for the logo; `second_close()` before the game's emulator is closed (a compilation's switch: `second_drop()` then `second_open`). game.c's `ss_setup` / `ss_switch`, `run_frame`, `state_load`, `restart_game`, `logo_refresh`, `draw_game` and the end of a game call the same (game.c writes the module's state itself only to set it up, `sec.emu` / `cfg` / hooks, to count frames, `sec.frame`, the host's, and in `rebuild_textures`, which puts every picture up again after the GPU lost its textures: an app-only event), with the app's own parts around them (controls, button settings, WarioWare's sensor and screens, Android pinning, swallow keys, the SNES layout's camera pan, rewind, rumble). The app's calls can be traced (`GBADS_MODULE_TRACE`: second.c `second_trace_begin`) and replayed by the driver; regress.py's `"driver": true` cases check they give the same pictures (docs/TESTING.md). Keep anything only the module uses `static` in its own file; the headers are the module's interface.
 - `mapcap.c` map capture on a hidden second core in a background thread.
-  A `room` key change starts one once it has held 3 frames (game.c), calling
+  A `room` key change starts one once it has held 3 frames (second.c `map_refresh_step`), calling
   off one still running (`mapcap_cancel`: the shadow's frames stop running,
   `emu_cancelled`, composers keep nothing); `aw_run` waits draw only their
   last two frames (`emu_frame_blind`). `GBADS_DEBUG=1` logs each capture's
@@ -547,9 +638,16 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   else the bezel in its default colours), on `overlay_screens`. `tools/make_overlays.py` is the
   design's reference (the master images, a set for every device in `docs/devices.csv` to check
   against) and `--embed` makes `src/bezel_logo.c`. regress.py runs with `--overlays=off`.
-- `game.c` a play session: input, the second screen (map, logo, THPS2
-  snapshot), the quick bar (Controls picker, buttons, bug reports), pause
-  menu, cheats screen, screenshots.
+- `game.c` a play session: input, the second screen's textures and drawing
+  (its pictures come from the module above: map, logo, THPS2 snapshot, HUD),
+  the quick bar (Controls picker, buttons, bug reports), pause menu, cheats
+  screen, screenshots.
+  The contextual toggle (GEN-14, issue #37; settings `toggle`, `auto_rotate`,
+  `toggle_button`, hotkey action `HK_TOGGLE`, HOME + A; the state machine and `second_page()` are in `toggle.c`, the button in game.c): `toggle_ready()` is the one
+  gate, `toggle_press()` / `toggle_step()` the state machine (a turn that waits
+  fades the picture: `fadeLevel`), `toggle_new_subject()` starts the pages again
+  at the first when a capture was for a new subject (`capSubject`), `second_page()`
+  says which page is up. The button: `toggle_btn_screen()` / `toggle_btn_geom()` / `draw_toggle_btn()` (its own 240x176 canvas, so it can sit in the margin under the picture; `cv_put` draws on `cvBuf`), the tap claimed in the pointer loop before "a tap opens the menu". Views (Step 4): a profile with `views` (FF4 first) gives `composePages` pictures the toggle turns to, the first being what shows (no timer); `second_page()` returns `pageOffset` for them. A profile with `onPress` (and `altHere`, whether the other view exists here) has its other view captured on the press: `viewAlt`, `pressCap`, `viewWait`, `fadeUpload` (the old view fades out, the capture is asked for once it's dark, `mapcap_set_alt` before `mapcap_request`, composers read `mapcap_alt_view()`; a refresh still running is called off by the press; `tg_view_mode` says view or pages, the last page of a paged other view bringing the first back; no answer in 600 frames and the old view returns): Minish Cap, Mother 3, Mario & Luigi, Harvest Moon (`hm_farm`: the Farm Map scrolled in stops of 200 x 100 pixels by BG1's scroll, stitched, all sprites hidden, shrunk). In-game settings rows the game can't use (`toggle_supported`, `tallSupported`) are greyed out (`row_disabled`). `tools/regress.py` lints the Toggle rows (`toggle_lint`). Tests: `GBADS_TOGGLE_WAIT=N` (a case's `env`) forces a wait.
 - `ra.c` RetroAchievements (casual only) via rcheevos' rc_client, vendored in
   `third_party/rcheevos` (v12.5.0, trimmed: no hashing beyond md5.c, no
   libretro/RAIntegration). Server calls run the system `curl` in a worker
@@ -560,15 +658,44 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   no-op stubs elsewhere (Android: no curl yet). Test offline with
   `tools/ra_mock.py` (a stand-in server on 127.0.0.1:8099) and
   `--retroachievements=1 --ra-username=tester --ra-password=secret
-  --ra-host=http://127.0.0.1:8099`. Hardcore is not allowed before the app
-  has been public for 6 months (from Oct 13, 2026).
+  --ra-host=http://127.0.0.1:8099` (the mock also has game 777's Rich
+  Presence and a leaderboard; `touch /tmp/ra_mock_down` makes unlocks and
+  entries fail with HTTP 503). Hardcore (rule GEN-16: `ra_hardcore`
+  in prefs.cfg, the Game page's Hardcore item, hidden by `RA_HARDCORE_MENU 0` in ra.h until RetroAchievements approves (the owner's rule, Nov 22, 2026; set 1 then, and rewrite the wiki's Hardcore section and the changelog line); `ra_hardcore()` /
+  `ra_start_mode` / `ra_set_hardcore` / `ra_reset_wanted` in ra.c) is built
+  but not approved by RetroAchievements, which wants the app public for 6
+  months first (from Oct 13, 2026: Apr 13, 2027, unless they take libmgba as
+  the parent emulator); the plan and the rules page's checklist are in the
+  project's `claude/issue-82-progress.md`. Every state load goes through
+  game.c `state_load`, which refuses in hardcore; rewind, fast forward (`canFF`)
+  and cheats are gated beside it (`cheats_sync`). The regression suite doesn't cover RA
+  (no mock server in regress.py): test with `tools/ra_mock.py` and
+  `--ra_hardcore=1` (run it with `--update_check=0` from the game list: a
+  host run once updated itself over `build/host`). The compliance document for
+  RetroAchievements' team is `docs/RETROACHIEVEMENTS.md`.
+  Also in ra.c: the user agent (`GBADS/<numbers> (Linux|Android)
+  mgba/<numbers> rcheevos/<ver>`), the events for leaderboards, challenge and
+  progress indicators (drawn in the corners of the popup screen by
+  `draw_overlays`; leaderboards only run in hardcore, rc_client has no
+  softcore switch, so to see them on the host set the hardcore flag for a
+  local test build and put it back), and **`states/ra/pending.txt`**: every
+  unlock and leaderboard entry rc_client sends is kept (without the token) until the server
+  answers, then replayed at the next sign-in before the game loads
+  (`pending_track` / `pending_replay`; `replayBusy` holds `begin_load`).
+- `drmlease.c` (Linux; issue #86): the second screen on a panel leased from gamescope. ui.c opens it when there's one display and `GBADS_DRM_LEASE` is set (`drmlease_open`: the lease through libwayland-client opened at run time, headers and drm-lease protocol code in `third_party/wayland`, MIT; the panel lit by one atomic commit; two dumb buffers flipped on the leased plane, turned by the panel's orientation; kernel ioctls, no libdrm), makes views[1] a software view (`create_software_view`, retained: drawn only when it changes, `UI_RETAINED`) and `drmlease_present` puts its surface on the panel each frame. The touchscreen's turn comes from the panel's orientation (`touch_rotate`), and `evdev_touch_poll` opens its device with the `openat` system call (Steam's preloaded overlay made `open` fail on it). Test without a panel: docs/TESTING.md, "The leased panel's second screen". Licence: the lease request is a port of Azahar-Enhanced's (GPLv2 or later), noted in the file, `wiki/Licenses.md` and the zip's licenses folder.
 - `mapper.c` Settings > Map Buttons (Linux): asks for each button, builds an SDL mapping for that controller, kept in `<state_dir>/controllers.txt` and logged (bake device ones into `dist/gamecontrollerdb.txt`). Input scripts drive it with a virtual pad: `JOYBTN:n`, `JOYHAT:v`, `JOYAXIS:n,v`, `JOYBTN:-`.
 - `update.c` updates (Linux): GitHub's latest release, the notice and
   Settings > Updates (library.c), download through `http.c` (curl, or
   libcurl), SHA-256 check (`sha256.c`), install over the app's folder via
   `.new` files and rename (gba-ds.cfg kept), then main() execs the new
   binary. Test offline with `tools/update_mock.py` (docs/TESTING.md).
-- `library.c` the game list and its Settings screen (and the selected
+- `library.c` the first-run language question (GEN-18, issue #92:
+  `library_language_ask`, before the game list and from game.c at the first
+  pause; `library_language_ask_built` says which builds ask: a version
+  without `-dev`, or `GBADS_LANG_ASK` (Makefile `LANG_ASK`, build-rocknix.sh
+  and the environment), never `__wasi__`; main.c marks a first install,
+  an empty states folder, with `language_asked = 0`; regress.py sets
+  `GBADS_LANG_ASK=0` unless a case asks), the game list and its Settings screen (and the selected
   game's ROM checksum, read once per file on a worker thread and kept in
   `<state_dir>/roms.cache`: "Romhack: ..." / "Modified ROM" under its logo,
   GEN-8; regress.py's `"kind": "library"` cases). The scan (issue #49):
@@ -637,6 +764,7 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   with each launcher's `run-` written `run''-` (the same to the shell), and
   the games GBA DS doesn't support play without Banana's panel (a known
   issue; a per-game hook was asked of Banana's developers).
+- **Armada** (github.com/armada-os/armada, the AYN Thor's own system; issue #86, PR #96 by cerroverb): in **Game Mode** gamescope shows only the top panel and leases the bottom one (DSI-1) to a program that asks through the Wayland protocol `wp_drm_lease_device_v1`; on the desktop both panels are KDE's and GBA DS makes a window on each. `dist/launch.sh` (its "another system" branch) reads `/usr/libexec/armada/device-env` for `ARMADA_SECONDARY_CONNECTOR` / `ARMADA_SECONDARY_TOUCHSCREEN`, passes the touchscreen as `--touch-device` and, when Game Mode's `gamescope-primary` socket exists, sets `GBADS_DRM_LEASE` (the connector) and `GAMESCOPE_WAYLAND_DISPLAY=gamescope-primary`; its first log lines say what it found ("Armada: bottom panel ..."). `src/drmlease.c` does the rest (below). Tried by the contributor on a Thor in Game Mode from a Steam shortcut; the owner's own device is the RG DS Plus.
 - **The Stock Linux OS** (Anbernic's own) on the RG DS Plus (Buildroot, weston, two
   windows): launch.sh's "another system" branch. Ports in `/mnt/mmc/Ports`,
   ROMs `/mnt/mmc/Roms/GBA`. Touch: `anbernic_misc/tpctrl` 0 (on) for the run
@@ -655,7 +783,9 @@ into `dev` once it's in good shape, so that `dev` stays releasable.
   package registries only: not the device, not other websites from the
   shell. Test builds go to the owner with SendUserFile; they report back.
 - **Build:** `GBADS_WEB_WORK=<scratch dir>/wasm scripts/build-rocknix.sh`
-  (the web build's work folder outside the repo), output in `dist/`.
+  (the web build's work folder outside the repo), output in `dist/`. Only on
+  `dev`: from any other branch, an issue's included, add `GBADS_SIDE=<slug>`
+  ("Side builds").
 - **Git:** fetch with `git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'`;
   push `git push -q origin dev`, then check `git rev-parse --short dev`
   against `refs/remotes/origin/dev` (the push prints nothing useful).

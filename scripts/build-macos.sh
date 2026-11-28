@@ -30,11 +30,20 @@ if [ ! -d "$DEPS/mgba" ]; then
 	git clone https://github.com/mgba-emu/mgba.git "$DEPS/mgba"
 	git -C "$DEPS/mgba" checkout "$MGBA_COMMIT"
 fi
-if [ ! -f "$DEPS/mgba/build-macos/libmgba.a" ]; then
-	echo "== libmgba (macOS)"
+# libmgba again when the pinned commit or the options change (mgba-options.sh;
+# M_CORE_GB, for one, came with the Game Boy games)
+MGBA_STAMP="$DEPS/mgba/build-macos/.gba-ds-stamp"
+MGBA_WANT="$MGBA_COMMIT ${MGBA_OPTS[*]} $MACOS_MIN"
+if [ ! -f "$DEPS/mgba/build-macos/libmgba.a" ] || [ "$(cat "$MGBA_STAMP" 2>/dev/null)" != "$MGBA_WANT" ]; then
+	echo "== libmgba (macOS, mGBA $MGBA_COMMIT)"
+	git -C "$DEPS/mgba" fetch -q origin || true
+	git -C "$DEPS/mgba" checkout -q "$MGBA_COMMIT"
+	rm -rf "$DEPS/mgba/build-macos"
 	cmake -S "$DEPS/mgba" -B "$DEPS/mgba/build-macos" "${MGBA_OPTS[@]}" \
 		-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN"
 	make -C "$DEPS/mgba/build-macos" -j"$JOBS" mgba
+	echo "$MGBA_WANT" > "$MGBA_STAMP"
+	rm -rf "$OUT/gba-ds" # (linked with the old library)
 fi
 
 if [ ! -f "$DEPS/sdl-macos/lib/libSDL2.a" ]; then
@@ -47,7 +56,10 @@ if [ ! -f "$DEPS/sdl-macos/lib/libSDL2.a" ]; then
 fi
 
 echo "== gba-ds"
-make -j"$JOBS"
+# the widescreen patches the app offers (WS-6): a release's from main, a -dev version's from dev
+WIDE_REF=main
+case "$(cat VERSION)" in *-dev*) WIDE_REF=dev ;; esac
+make -j"$JOBS" WIDE_REF="$WIDE_REF"
 
 echo "== $APP"
 VERSION="$(cat VERSION)"

@@ -1,34 +1,49 @@
 #include <limits.h>
 #include "ui.h"
 
+#include "android.h"
+#include "brand.h"
+#include "drmlease.h"
+#include "font.h"
+#include "textfont.h"
+#include "fonts_data.h"
+#include "logo.h"
+#include "rgba.h"
+#include "paths.h"
+#include "upscale.h"
+#include "profiles.h"
+#include "emu.h"
+#include "i18n.h"
+#include "macos.h"
+
+#include <pthread.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <ctype.h>
+#include <string.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <strings.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <time.h>
+
 /* the left stick presses the D-pad (issue #57): game.c turns it off for a game
  * with left_stick_dpad = 0, and on again for its menus and the game list */
 static bool stickDpad = true;
 void ui_stick_dpad(bool on) {
 	stickDpad = on;
 }
-#include "android.h"
-#include "brand.h"
-#include "font.h"
-#include "textfont.h"
-#include "fonts_data.h"
-#include "logo.h"
-#include "paths.h"
-#include "profiles.h"
-#include "emu.h"
-#include "i18n.h"
-#include "macos.h"
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <string.h>
-#include <unistd.h>
-#include <dirent.h>
-#include <strings.h>
-#include <sys/stat.h>
-#include <time.h>
+/* Retained views (below): Android's, and a leased panel's on Linux */
+#if defined(__ANDROID__) || defined(GBADS_DRM_LEASE)
+#define UI_RETAINED 1
+#else
+#define UI_RETAINED 0
+#endif
 
 View views[2];
 int nViews;
@@ -108,6 +123,9 @@ static float tapX, tapY;
 /* SWIPE:x0,y0,x1,y1 (fractions of the window): down, 4 moves a tick apart, up */
 static float swipe[4];
 static int swipeStep = -1;
+/* DRAG:x,y puts a finger down and leaves it there, MOVE:x,y moves it, LIFT lifts it (WarioWare: Twisted!'s dial) */
+static float dragX, dragY;
+static bool dragDown;
 static char pendingShot[160];
 static char pendingLoad[160]; /* LOAD:file in an input script (regression tests) */
 
@@ -139,12 +157,14 @@ void ui_load_script(const char* path) {
 		long t;
 		char what[160];
 		if (line[0] == '#' || sscanf(line, "%ld %159s", &t, what) != 2) continue;
-		script = realloc(script, sizeof(*script) * (scriptLen + 1));
+		ScriptLine* grown = realloc(script, sizeof(*script) * (scriptLen + 1));
+		if (!grown) break;
+		script = grown;
 		ScriptLine* s = &script[scriptLen++];
 		s->tick = t;
 		s->btns = 0;
 		s->action[0] = 0;
-		if (!strncmp(what, "TAP:", 4) || !strncmp(what, "SWIPE:", 6) || !strncmp(what, "SHOT:", 5) || !strncmp(what, "LOAD:", 5) || !strcmp(what, "QUIT") ||
+		if (!strncmp(what, "TAP:", 4) || !strncmp(what, "SWIPE:", 6) || !strncmp(what, "DRAG:", 5) || !strncmp(what, "MOVE:", 5) || !strcmp(what, "LIFT") || !strncmp(what, "SHOT:", 5) || !strncmp(what, "LOAD:", 5) || !strcmp(what, "QUIT") ||
 		    !strncmp(what, "JOY", 3)) {
 			snprintf(s->action, sizeof(s->action), "%s", what);
 		} else {
@@ -214,6 +234,13 @@ static void run_script(void) {
 				push_finger(SDL_FINGERDOWN, swipe[0], swipe[1]);
 				swipeStep = 0;
 			}
+		} else if (!strncmp(s->action, "DRAG:", 5)) {
+			if (sscanf(s->action + 5, "%f,%f", &dragX, &dragY) == 2) push_finger(SDL_FINGERDOWN, dragX, dragY), dragDown = true;
+		} else if (!strncmp(s->action, "MOVE:", 5)) {
+			if (dragDown && sscanf(s->action + 5, "%f,%f", &dragX, &dragY) == 2) push_finger(SDL_FINGERMOTION, dragX, dragY);
+		} else if (!strcmp(s->action, "LIFT")) {
+			if (dragDown) push_finger(SDL_FINGERUP, dragX, dragY);
+			dragDown = false;
 		} else if (!strncmp(s->action, "SHOT:", 5)) {
 			snprintf(pendingShot, sizeof(pendingShot), "%s", s->action + 5);
 		} else if (!strncmp(s->action, "LOAD:", 5)) {
@@ -283,7 +310,22 @@ static bool create_view(View* v, int display, const char* title, bool fullscreen
 	return true;
 }
 
+/* A view with no window, drawn by a software renderer into its own
+ * surface (Android's software second screen, a leased panel's picture). */
+static bool create_software_view(View* v, int w, int h, Uint32 format) {
+	v->offwin = v->retained = true;
+	v->surf = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, format);
+	v->ren = v->surf ? SDL_CreateSoftwareRenderer(v->surf) : NULL;
+	if (!v->ren) {
+		fprintf(stderr, "second screen renderer: %s\n", SDL_GetError());
+		return false;
+	}
+	SDL_SetRenderDrawBlendMode(v->ren, SDL_BLENDMODE_BLEND);
+	return true;
+}
+
 static void open_pads(void);
+static void check_flip_pad(void);
 
 /* ------------------------------------------------------- raw input */
 
@@ -384,12 +426,116 @@ static void script_joy(const char* a) {
 	}
 }
 
+/* Rumble (issue #83). The motor is the controller's own when it has one (an external pad), else the
+ * device's (the RG DS Plus's vibration motor shows up as a force-feedback input device of its own,
+ * which SDL lists as a haptic device). ui_rumble(level) is called every frame with how hard the
+ * game wants it (0..1), times the player's strength; it only talks to the motor when the level
+ * moves a step or the last request is about to run out, so it isn't an ioctl a frame. */
+static SDL_Haptic* rumbleHaptic;
+static bool rumbleHapticTried;
+static float rumbleSent;     /* the level the motor was last asked for */
+static Uint32 rumbleSentAt;  /* when (SDL_GetTicks) */
+static bool rumbleOnPad;     /* the last request went to a controller */
+
+static void rumble_haptic_open(void) {
+	if (rumbleHapticTried) return;
+	rumbleHapticTried = true;
+#ifndef __wasi__
+	if (SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
+		fprintf(stderr, "rumble: no haptic support (%s)\n", SDL_GetError());
+		return;
+	}
+	int n = SDL_NumHaptics();
+	for (int i = 0; i < n; ++i) {
+		SDL_Haptic* h = SDL_HapticOpen(i);
+		if (!h) {
+			fprintf(stderr, "rumble: haptic %d (%s): can't open (%s)\n", i, SDL_HapticName(i), SDL_GetError());
+			continue;
+		}
+		bool ok = SDL_HapticRumbleSupported(h) && SDL_HapticRumbleInit(h) == 0;
+		fprintf(stderr, "rumble: haptic %d (%s): %s\n", i, SDL_HapticName(i), ok ? "usable" : "no rumble");
+		if (ok && !rumbleHaptic) rumbleHaptic = h;
+		else SDL_HapticClose(h);
+	}
+	if (!rumbleHaptic) fprintf(stderr, "rumble: no haptic motor found (%d device%s)\n", n, n == 1 ? "" : "s");
+#endif
+}
+
+/* One request to whichever motor there is, for ms. */
+static bool rumble_send(float level, Uint32 ms) {
+	bool onPad = false;
+#ifndef __wasi__
+	if (level > 0) {
+		Uint16 v = (Uint16) (level * 65535.0f);
+		for (int i = 0; i < 8; ++i)
+			if (pads[i] && SDL_GameControllerRumble(pads[i], v, v, ms) == 0) onPad = true;
+	} else {
+		for (int i = 0; i < 8; ++i) if (pads[i] && rumbleOnPad) SDL_GameControllerRumble(pads[i], 0, 0, 0);
+	}
+	if (!onPad) {
+		rumble_haptic_open();
+		if (rumbleHaptic) {
+			if (level > 0) SDL_HapticRumblePlay(rumbleHaptic, level, ms);
+			else SDL_HapticRumbleStop(rumbleHaptic);
+		}
+	} else if (rumbleHaptic) {
+		SDL_HapticRumbleStop(rumbleHaptic);
+	}
+#else
+	(void) level, (void) ms;
+#endif
+	rumbleOnPad = onPad;
+	return onPad;
+}
+
+void ui_rumble(float level) {
+	if (level < 0) level = 0;
+	if (level > 1) level = 1;
+	level = floorf(level * 20.0f + 0.5f) / 20.0f; /* steps of 5 % */
+	Uint32 now = SDL_GetTicks();
+	if ((int) (now - rumbleSentAt) < 0) return; /* a pulse is still running */
+	if (level == rumbleSent && (level == 0 || now - rumbleSentAt < 60)) return;
+	rumbleSent = level;
+	rumbleSentAt = now;
+	if (level > 0 || rumbleOnPad || rumbleHaptic) rumble_send(level, 120); /* (each request runs out by itself if we stop asking) */
+}
+
+void ui_rumble_pulse(float level, int ms) {
+	rumble_send(level, (Uint32) ms);
+	rumbleSent = level;
+	rumbleSentAt = SDL_GetTicks() + (Uint32) ms; /* (the next ui_rumble doesn't cut it short) */
+}
+
+/* A controller that folds over the bottom of a phone held upright (8BitDo's
+ * FlipPad, issue #107): with pad_cover = auto, the screens are kept above it
+ * while one is plugged in. Known by its name; GBADS_TEST_PAD names a pretend
+ * one (tests). */
+static bool flipPadIn;
+
+static bool flip_pad_name(const char* name) {
+	if (!name) return false;
+	char low[128];
+	size_t n = 0;
+	for (; name[n] && n < sizeof(low) - 1; ++n) low[n] = (char) tolower((unsigned char) name[n]);
+	low[n] = 0;
+	return strstr(low, "flippad") || strstr(low, "flip pad");
+}
+
+static void check_flip_pad(void) {
+	bool in = flip_pad_name(getenv("GBADS_TEST_PAD"));
+	for (int i = 0; i < SDL_NumJoysticks() && !in; ++i) in = flip_pad_name(SDL_JoystickNameForIndex(i));
+	if (in == flipPadIn) return;
+	flipPadIn = in;
+	fprintf(stderr, "controller over the screen (FlipPad): %s (pad_cover = %s)\n", in ? "plugged in" : "gone", cfg->padCover);
+	if (views[0].ren && !strcmp(cfg->padCover, "auto")) ui_layout();
+}
+
 static void open_pads(void) {
 	for (int i = 0; i < SDL_NumJoysticks() && i < 8; ++i) {
 		if (!pads[i] && SDL_IsGameController(i)) {
 			pads[i] = SDL_GameControllerOpen(i);
 			if (pads[i]) {
-				fprintf(stderr, "controller: %s\n", SDL_GameControllerName(pads[i]));
+				fprintf(stderr, "controller: %s (%04x:%04x)\n", SDL_GameControllerName(pads[i]), SDL_JoystickGetDeviceVendor(i), SDL_JoystickGetDeviceProduct(i));
 				char* map = SDL_GameControllerMapping(pads[i]);
 				if (map) fprintf(stderr, "  mapping: %s\n", map), SDL_free(map);
 			}
@@ -401,17 +547,18 @@ static void open_pads(void) {
 			if (pads[i]) fprintf(stderr, "controller: %s (mapped)\n", SDL_GameControllerName(pads[i]));
 		} else if (!pads[i] && !rawJoys[i]) {
 			rawJoys[i] = SDL_JoystickOpen(i);
-			if (rawJoys[i]) fprintf(stderr, "joystick without mapping: %s\n", SDL_JoystickName(rawJoys[i]));
+			if (rawJoys[i]) fprintf(stderr, "joystick without mapping: %s (%04x:%04x)\n", SDL_JoystickName(rawJoys[i]), SDL_JoystickGetDeviceVendor(i), SDL_JoystickGetDeviceProduct(i));
 		}
 	}
 	update_user_mapped();
+	check_flip_pad();
 }
 
 bool ui_init(Config* c, bool wantDual) {
 	cfg = c;
 	debug = getenv("GBADS_DEBUG") != NULL;
 	SDL_SetHint(SDL_HINT_APP_NAME, "GBA DS");
-	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg->smooth ? "linear" : "nearest");
+	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, cfg->filter == FILTER_SMOOTH ? "linear" : "nearest");
 #ifdef __ANDROID__
 	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft");
 	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1"); /* BACK opens the menu instead of closing the app */
@@ -466,15 +613,7 @@ bool ui_init(Config* c, bool wantDual) {
 		fprintf(stderr, "second screen: GPU, %dx%d (game screen %dx%d)\n", sw, sh, w0, h0);
 	} else if (strcmp(cfg->layout, "single") && android_second_size(&sw, &sh)) {
 		fprintf(stderr, "second screen: software\n");
-		views[1].offwin = views[1].retained = true;
-		views[1].surf = SDL_CreateRGBSurfaceWithFormat(0, sw, sh, 32, SDL_PIXELFORMAT_ABGR8888);
-		views[1].ren = views[1].surf ? SDL_CreateSoftwareRenderer(views[1].surf) : NULL;
-		if (views[1].ren) {
-			SDL_SetRenderDrawBlendMode(views[1].ren, SDL_BLENDMODE_BLEND);
-			nViews = 2;
-		} else {
-			fprintf(stderr, "second screen renderer: %s\n", SDL_GetError());
-		}
+		if (create_software_view(&views[1], sw, sh, SDL_PIXELFORMAT_ABGR8888)) nViews = 2;
 	}
 	views[0].retained = true; /* drawn only when it changes, like the second screen */
 	fprintf(stderr, "android: %s\n", nViews == 2 ? "two screens" : "one screen (no second display)");
@@ -497,6 +636,28 @@ bool ui_init(Config* c, bool wantDual) {
 		fprintf(stderr, "  display %d: %s, %dx%d at %d,%d\n", i, name ? name : "?", b.w, b.h, b.x, b.y);
 	}
 	fprintf(stderr, "touch devices: %d\n", SDL_GetNumTouchDevices());
+#ifdef GBADS_DRM_LEASE
+	/* one display, the other panel leased from the compositor (Armada's
+	 * Game Mode: launch.sh sets GBADS_DRM_LEASE): the game's window on the
+	 * display, the second screen drawn in software and put on the panel */
+	int lw, lh;
+	if (displays < 2 && strcmp(cfg->layout, "single") && drmlease_open(&lw, &lh)) {
+		if (!create_view(&views[0], 0, "GBA DS", fullscreen, 720, 480)) return false;
+		/* (ARGB8888 is the panel's XRGB8888: copied as it is) */
+		if (create_software_view(&views[1], lw, lh, SDL_PIXELFORMAT_ARGB8888)) {
+			nViews = 2;
+			/* the touchscreen lies as the panel scans out, so it turns back
+			 * as the picture does (Right Side Up, 270: touch_rotate 90) */
+			if (cfg->touchRotate < 0) cfg->touchRotate = (360 - drmlease_rotation()) % 360;
+			fprintf(stderr, "second screen: the leased panel, %dx%d (software), touch turned %d degrees\n", lw, lh, cfg->touchRotate);
+		} else {
+			drmlease_close();
+			nViews = 1;
+		}
+		ui_layout();
+		return true;
+	}
+#endif
 	if (dual && displays >= 2) {
 		nViews = 2;
 		if (!create_view(&views[0], 0, "GBA DS", true, 720, 480) ||
@@ -530,7 +691,8 @@ static void disc_drop(void);
 /* After a wake (or a renderer reset): the textures ui.c keeps for itself
  * (the scaling pipeline's, the text images, the disc) are let go, to be
  * made again as they're next needed. */
-void ui_textures_reset(void) {
+/* the scaling pipeline's cached textures (render targets, shader masks) let go */
+static void pipe_drop(void) {
 	for (int v = 0; v < 2; ++v) {
 		for (int i = 0; i < PIPE_CACHE; ++i) {
 			if (pipeTargets[v][i].tex) SDL_DestroyTexture(pipeTargets[v][i].tex);
@@ -539,19 +701,23 @@ void ui_textures_reset(void) {
 			memset(&pipeGrids[v][i], 0, sizeof(pipeGrids[v][i]));
 		}
 	}
+}
+
+void ui_textures_reset(void) {
+	pipe_drop();
 	text_cache_drop();
 	disc_drop();
 }
 
 void ui_shutdown(void) {
-	for (int v = 0; v < 2; ++v) {
-		for (int i = 0; i < PIPE_CACHE; ++i) {
-			if (pipeTargets[v][i].tex) SDL_DestroyTexture(pipeTargets[v][i].tex);
-			if (pipeGrids[v][i].tex) SDL_DestroyTexture(pipeGrids[v][i].tex);
-		}
-	}
+	ui_rumble(0);
+	if (rumbleHaptic) SDL_HapticClose(rumbleHaptic), rumbleHaptic = NULL;
+	pipe_drop();
+#ifdef GBADS_DRM_LEASE
+	drmlease_close();
+#endif
 	for (int i = 0; i < nViews; ++i) {
-		if (i == 0 || views[i].ren != views[0].ren) SDL_DestroyRenderer(views[i].ren);
+		if (i == 0 || views[i].ren != views[0].ren) upscale_forget(views[i].ren), SDL_DestroyRenderer(views[i].ren);
 		if (views[i].win) SDL_DestroyWindow(views[i].win);
 		if (views[i].surf) SDL_FreeSurface(views[i].surf);
 		views[i] = (View) { 0 };
@@ -721,7 +887,70 @@ void ui_layout_pictures(void) {
 	}
 }
 
+static bool oneDisplay; /* (set by layout_screens) */
+static bool stripMode; /* the game list's strip over the list (GEN-19; set by layout_screens) */
+static float stripPx;  /* the strip's layout unit */
+static int stripExtra; /* pixels the strip needs beyond UI_STRIP_UNITS (a larger ROM path, GEN-21) */
+bool ui_list_strip(void) { return stripMode; }
+bool ui_list_strip_extra(int px) {
+	if (px == stripExtra) return false;
+	stripExtra = px;
+	if (!stripMode) return false;
+	ui_layout();
+	return true;
+}
+static enum UiFace face = UI_FACE_GAME; /* what is up: decides how one display is cut (GEN-19) */
+
+/* GEN-19, the one place that says how one display is cut, by what is up:
+ * - the game: both screens on it as One display says (Game only: one);
+ * - a menu (the pause menu and its screens, the game list's Settings and
+ *   its screens, the update notice): one screen over the whole display;
+ * - the game list: both screens as One display says, as on a two-screen
+ *   device (the list on the touch screen, the game's preview on the
+ *   other), unless the list's part would be too small or the wrong shape
+ *   (list_part_fits): then the list alone.
+ * Two displays (or a window over two panels) aren't cut: this changes nothing there. */
+void ui_face(enum UiFace f) {
+	if (f == face) return;
+	face = f;
+	if (oneDisplay) ui_layout();
+}
+
+enum UiFace ui_face_now(void) {
+	return face;
+}
+
+bool ui_one_display(void) {
+	return oneDisplay;
+}
+
+/* the game list's part of one display is big enough and of a shape its
+ * header, sort bar and tiles are laid out for (they're sized by its height):
+ * at least the RG DS's 640x480 screen, and from a little narrower than
+ * square (a phone held upright, stacked: 1080x1200) to twice as wide as tall */
+static bool list_part_fits(SDL_Rect r) {
+	return r.w >= 640 && r.h >= 480 && r.w * 10 >= r.h * 8 && r.w <= r.h * 2;
+}
+
+/* How many of the window's rows, from the bottom, a controller over the
+ * display covers (pad_cover; above): only held upright, with one display;
+ * pad_cover_mm by the display's pixels per inch, else 45 % of it, and never
+ * more than 60 %. */
+static int pad_cover(int w, int h) {
+	if (nViews != 1 || h <= w || !strcmp(cfg->padCover, "off") || (!strcmp(cfg->padCover, "auto") && !flipPadIn)) return 0;
+	float hd = 0, vd = 0;
+	int di = views[0].win ? SDL_GetWindowDisplayIndex(views[0].win) : -1;
+	if (di >= 0 && SDL_GetDisplayDPI(di, NULL, &hd, &vd) == 0 && hd > 0) vd = (hd + vd) / 2;
+	int px = vd >= 80 && vd <= 1000 ? (int) (SDL_clamp(cfg->padCoverMm, 0, 200) / 25.4f * vd) : h * 45 / 100;
+	px = SDL_min(px, h * 60 / 100);
+	static int logged = -1;
+	if (px != logged) logged = px, fprintf(stderr, "screens: %d rows kept for the controller over the screen (%d mm at %.0f ppi)\n", px, cfg->padCoverMm, vd);
+	return px;
+}
+
 static void layout_screens(void) {
+	oneDisplay = false;
+	stripMode = false;
 	if (nViews == 2) {
 		nScreens = 2;
 #ifdef __ANDROID__
@@ -767,6 +996,10 @@ static void layout_screens(void) {
 		screens[1] = (Screen) { 0, { (w - tw1) / 2, th0, tw1, th1 } };
 		return;
 	}
+	/* a controller over the bottom of the display (above): the screens cut
+	 * from the part above it */
+	int cover = pad_cover(w, h);
+	h -= cover;
 	const char* lay = cfg->layout;
 	/* a hinge across the middle of one display (Surface Duo spanned over
 	 * both screens, issue #48): a screen each side of it, the hinge's
@@ -779,9 +1012,9 @@ static void layout_screens(void) {
 		if (gap > 0) lay = h > w ? "span-v" : "span-h";
 		else lay = w >= h * 18 / 10 ? "span-h" : h >= w * 12 / 10 ? "span-v" : "single";
 	}
-	static char logged[48];
-	char line[48];
-	snprintf(line, sizeof(line), "%dx%d %s gap %d", w, h, lay, gap);
+	static char logged[64];
+	char line[64];
+	snprintf(line, sizeof(line), "%dx%d %s gap %d cover %d", w, h + cover, lay, gap, cover);
 	if (strcmp(line, logged)) snprintf(logged, sizeof(logged), "%s", line), fprintf(stderr, "screens: one window, %s\n", line);
 	if (!strcmp(lay, "span-h")) {
 		nScreens = 2;
@@ -794,8 +1027,54 @@ static void layout_screens(void) {
 		screens[0] = (Screen) { 0, { 0, 0, w, s } };
 		screens[1] = (Screen) { 0, { 0, s + gap, w, h - s - gap } };
 	} else {
+		/* one display, both screens on it (issue #84): the game and the
+		 * second screen side by side (the long way of the display with
+		 * "auto") or stacked, the second one's share of it 50 / 40 / 30 %.
+		 * Where the game is (swap) is the player's, as with two screens. */
+		oneDisplay = true;
+		const char* sl = cfg->singleLayout;
+		bool together = strcmp(sl, "off") != 0 && strcmp(sl, "single") != 0 && face != UI_FACE_MENU;
+		if (together) {
+			bool side = !strcmp(sl, "side") || (!strcmp(sl, "auto") && w >= h);
+			int pct = !strcmp(cfg->singleSize, "small") ? 30 : !strcmp(cfg->singleSize, "medium") ? 40 : 50;
+			int total = side ? w : h;
+			int sec = total * pct / 100, gm = total - sec;
+			int a = cfg->swap ? sec : gm; /* screen 0's length, screen 1's the rest */
+			nScreens = 2;
+			if (side) {
+				screens[0] = (Screen) { 0, { 0, 0, a, h } };
+				screens[1] = (Screen) { 0, { a, 0, w - a, h } };
+			} else {
+				screens[0] = (Screen) { 0, { 0, 0, w, a } };
+				screens[1] = (Screen) { 0, { 0, a, w, h - a } };
+			}
+			static char loggedS[96];
+			char ls[96];
+			bool fits = true;
+			if (face == UI_FACE_LIST) fits = list_part_fits(screens[ui_touch_screen()].rect);
+			snprintf(ls, sizeof(ls), "%dx%d %s %d%% swap %d%s", w, h, side ? "side" : "stacked", pct, cfg->swap,
+			         face == UI_FACE_LIST ? (fits ? " (game list)" : " (game list: its part too small, the strip over the list)") : "");
+			if (strcmp(ls, loggedS)) snprintf(loggedS, sizeof(loggedS), "%s", ls), fprintf(stderr, "screens: both on one display, %s\n", ls);
+			if (fits) return;
+		}
 		nScreens = 1;
 		screens[0] = (Screen) { 0, { 0, 0, w, h } };
+		if (face == UI_FACE_LIST) {
+			/* GEN-19: never the list alone on one display: the selected game's details
+			 * in a strip across the top (a unit of a 256th of the width, as the RG DS
+			 * Plus's other screen is across, the strip at most a quarter of the height),
+			 * the list under it */
+			stripPx = SDL_max(2.0f, SDL_min(w / 256.0f, h / 4.0f / UI_STRIP_UNITS));
+			int s = SDL_min((int) (stripPx * UI_STRIP_UNITS) + stripExtra, h / 2);
+			nScreens = 2;
+			stripMode = true;
+			screens[0] = (Screen) { 0, { 0, 0, w, s } };
+			screens[1] = (Screen) { 0, { 0, s, w, h - s } };
+			static char loggedS[64];
+			char ls[64];
+			snprintf(ls, sizeof(ls), "%dx%d, strip %d", w, h, s);
+			if (strcmp(ls, loggedS)) snprintf(loggedS, sizeof(loggedS), "%s", ls), fprintf(stderr, "screens: game list strip, %s\n", ls);
+		}
 	}
 }
 
@@ -819,6 +1098,7 @@ uint64_t ui_ticks(void) {
 
 int ui_touch_screen(void) {
 	if (nScreens < 2) return 0;
+	if (stripMode) return 1; /* (the list, under the strip) */
 #ifdef __ANDROID__
 	if (lastTouchScreen >= 0 && lastTouchScreen < nScreens) return lastTouchScreen;
 #endif
@@ -837,7 +1117,7 @@ static int view_of_window(Uint32 id) {
 	if (id == GBADS_SECOND_WINDOW_ID) return nViews == 2 ? 1 : -1;
 #endif
 	for (int i = 0; i < nViews; ++i) {
-		if (SDL_GetWindowID(views[i].win) == id) return i;
+		if (views[i].win && SDL_GetWindowID(views[i].win) == id) return i;
 	}
 	return -1;
 }
@@ -921,6 +1201,7 @@ void ui_on_foreground(void (*fn)(void)) {
 #include <fcntl.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 /* touch_device: the touchscreen read straight from its input device. One
  * finger: its position and whether it's down, sent on as SDL's would be. */
 static int evTouchFd = -2; /* -2: not opened yet; -1: none */
@@ -933,7 +1214,11 @@ static void evdev_touch_poll(void) {
 	if (evTouchFd == -2) {
 		evTouchFd = -1;
 		if (!cfg->touchDevice[0]) return;
-		evTouchFd = open(cfg->touchDevice, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+		/* the system call itself, not libc's open: on the AYN Thor, started
+		 * from Steam (Armada's Game Mode), open answered ENODEV for the
+		 * touchscreens in MHGU Recomp's DRM lease build while the system call
+		 * worked (Steam's preloaded overlay library is the likely cause) */
+		evTouchFd = (int) syscall(SYS_openat, AT_FDCWD, cfg->touchDevice, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 		if (evTouchFd < 0) {
 			fprintf(stderr, "touch device %s: can't open it\n", cfg->touchDevice);
 			return;
@@ -1132,6 +1417,9 @@ bool ui_events(void) {
 		case SDL_CONTROLLERDEVICEADDED:
 		case SDL_JOYDEVICEADDED:
 			open_pads();
+			break;
+		case SDL_JOYDEVICEREMOVED:
+			check_flip_pad();
 			break;
 		case SDL_WINDOWEVENT:
 			if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || ev.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -1342,16 +1630,27 @@ static uint32_t tex_version(SDL_Texture* t) {
  * 5-bit colour each 8-bit one came from (mGBA: c << 3 | c >> 2). */
 static uint32_t* ccLut;
 static bool ccOn;              /* pictures go through ccLut */
-static bool ccWant;            /* Display > Color Correction */
+static int ccWant;             /* Display > Color Correction: 0 off, 1 GBA, 2 Game Boy Color */
 static int ccGain = 100;       /* brightening, in percent (the subpixel shaders) */
-static bool lutCc = false;     /* what ccLut holds */
+static int lutCc = 0;           /* what ccLut holds */
 static int lutGain = -1;
-static void cc_build(bool cc, int gain) {
-	static const double m[3][3] = {
+static void cc_build(int mode, int gain) {
+	bool cc = mode != 0;
+	static const double gbaM[3][3] = {
 		{ 0.80, 0.275, -0.075 },
 		{ 0.135, 0.64, 0.225 },
 		{ 0.195, 0.155, 0.65 },
 	};
+	/* A Game Boy Color's screen (GB-8): our own first guess, not copied from anywhere: its colours
+	 * wash out and bleed into each other more than the GBA's (each row adds to 1.0, so white stays
+	 * white), through gamma 2.2 both ways, no darkening */
+	static const double gbcM[3][3] = {
+		{ 0.78, 0.18, 0.04 },
+		{ 0.10, 0.74, 0.16 },
+		{ 0.16, 0.16, 0.68 },
+	};
+	const double (*m)[3] = mode == 2 ? gbcM : gbaM;
+	double gam = mode == 2 ? 2.2 : 2.0, lum = mode == 2 ? 1.0 : 0.93, dark = mode == 2 ? 0.0 : 0.5;
 	if (!ccLut) ccLut = malloc(32768 * sizeof(uint32_t));
 	if (!ccLut) return;
 	for (int c = 0; c < 32768; ++c) {
@@ -1359,14 +1658,14 @@ static void cc_build(bool cc, int gain) {
 		for (int k = 0; k < 3; ++k) {
 			int v5 = c >> (k * 5) & 31;
 			double v = ((v5 << 3) | (v5 >> 2)) / 255.0;
-			if (cc) v = pow(v, 2.0 + 0.5) * 0.93;
+			if (cc) v = pow(v, gam + dark) * lum;
 			in[k] = v < 0 ? 0 : v > 1 ? 1 : v;
 		}
 		double o[3], top = 0;
 		for (int k = 0; k < 3; ++k) {
 			double v = cc ? m[k][0] * in[0] + m[k][1] * in[1] + m[k][2] * in[2] : in[k];
 			v = v < 0 ? 0 : v > 1 ? 1 : v;
-			o[k] = cc ? pow(v, 1.0 / 2.0) : v;
+			o[k] = cc ? pow(v, 1.0 / gam) : v;
 			if (o[k] > top) top = o[k];
 		}
 		/* brightened (the shader's stripes darken it again), all three
@@ -1381,15 +1680,15 @@ static void cc_build(bool cc, int gain) {
 		}
 		ccLut[c] = out;
 	}
-	lutCc = cc, lutGain = gain;
+	lutCc = mode, lutGain = gain;
 }
 static void cc_refresh(void) {
-	bool want = ccWant || ccGain != 100;
+	bool want = ccWant != 0 || ccGain != 100;
 	if (want && (lutCc != ccWant || lutGain != ccGain || !ccLut)) cc_build(ccWant, ccGain);
 	ccOn = want && ccLut;
 }
-void ui_color_correction(bool on) {
-	ccWant = on;
+void ui_color_correction(int mode) {
+	ccWant = mode;
 	cc_refresh();
 }
 
@@ -1400,6 +1699,7 @@ void ui_color_correction(bool on) {
  * so the brightest can't be brightened much, and look a little darker
  * under the stripes than without them). */
 static int uiShader = SH_OFF;
+static bool uiShaderGame; /* a game session chose the pattern (a Game Boy game's own, GB-10): else Display > Shader's */
 static const struct {
 	float other, gap, row; /* a stripe's other two colours, the gap column, the bottom row */
 	int gain;
@@ -1409,14 +1709,40 @@ static const struct {
 	{ 0.45f, 0.50f, 0.75f, 140 }, /* strong: for bright screens (about 0.7) */
 };
 void ui_shader(int sh) {
-	uiShader = sh >= 0 && sh < SH_COUNT ? sh : SH_OFF;
+	uiShaderGame = sh >= 0 && sh < SH_COUNT;
+	uiShader = uiShaderGame ? sh : SH_OFF;
 	ccGain = uiShader >= SH_SUB_LIGHT ? subPresets[uiShader - SH_SUB_LIGHT].gain : 100;
 	cc_refresh();
 }
+int ui_filter_fit(int filter) {
+	return upscale_fit(nViews > 0 ? views[0].ren : NULL, filter);
+}
+const char* ui_filter_note(int filter, bool* grey) {
+	int fit = ui_filter_fit(filter);
+	*grey = fit == UPSCALE_TOO_HEAVY || fit == UPSCALE_NO_GL;
+	if (fit == UPSCALE_TOO_HEAVY) return N_("Too heavy for this device's graphics chip: drawn as Sharp here. Kept for a device that can run it.");
+	if (fit == UPSCALE_NO_GL) return N_("Needs OpenGL ES, which GBA DS isn't drawing with here: drawn as Sharp.");
+	if (fit == UPSCALE_UNTRIED) return N_("Heavy: not yet tried on this device's graphics chip, so it may not run at full speed.");
+	return NULL;
+}
+bool ui_upscaling(void) {
+	return upscale_factor(cfg->filter) && nViews > 0 && views[0].ren && upscale_filter_ready(views[0].ren, cfg->filter);
+}
+/* the pattern the pictures are drawn with: the session's (ui_shader), else Display > Shader's */
+static int shader_choice(void) {
+	return uiShaderGame ? uiShader : cfg->shader;
+}
+/* a session is over: the game list follows Display > Shader again */
+void ui_shader_setting(void) {
+	uiShaderGame = false;
+}
+/* a pixel's entry in ccLut: the 5-bit colour each 8-bit channel came from */
+static inline unsigned cc_key(uint32_t p) {
+	return (p >> 3 & 31) | (p >> 11 & 31) << 5 | (p >> 19 & 31) << 10;
+}
 uint32_t ui_color_correct(uint32_t p) {
 	if (!ccOn) return p;
-	unsigned key = (p >> 3 & 31) | (p >> 11 & 31) << 5 | (p >> 19 & 31) << 10;
-	return ccLut[key] | (p & 0xFF000000u);
+	return ccLut[cc_key(p)] | (p & 0xFF000000u);
 }
 
 static void update_texture(SDL_Texture* t, const void* px, int pitch, bool correct);
@@ -1444,7 +1770,7 @@ static void update_texture(SDL_Texture* t, const void* px, int pitch, bool corre
 				const uint32_t* src = px;
 				for (size_t i = 0; i < n; ++i) {
 					uint32_t p = src[i];
-					buf[i] = ccLut[(p >> 3 & 31) | (p >> 11 & 31) << 5 | (p >> 19 & 31) << 10] | (p & 0xFF000000u);
+					buf[i] = ccLut[cc_key(p)] | (p & 0xFF000000u);
 				}
 				px = buf;
 			}
@@ -1473,7 +1799,8 @@ static void font_text_raw(int screen, int font, int x, int cy, int capPx, const 
  * showing the last picture. The second screen is drawn by the GPU into the
  * second display's window (android_second_begin/_end) or, failing that, by
  * a software renderer into views[1].surf. */
-enum { OP_IMAGE, OP_PIXELS, OP_FILL, OP_ROUND, OP_TEXT, OP_LABEL, OP_CLIP, OP_NOCLIP };
+enum { OP_IMAGE, OP_PIXELS, OP_FILL, OP_ROUND, OP_TEXT, OP_LABEL, OP_CLIP, OP_NOCLIP, OP_ROUND_TOP };
+static void fill_round_top(int screen, SDL_Rect r, SDL_Color c, int radius);
 typedef struct {
 	int kind, screen;
 	SDL_Texture* const* tex; /* per-view array, as passed in */
@@ -1486,7 +1813,7 @@ typedef struct {
 	char mode[16];
 	char text[256];
 } DrawOp;
-#ifdef __ANDROID__
+#if UI_RETAINED
 typedef struct {
 	DrawOp* ops;
 	int nOps, capOps;
@@ -1498,21 +1825,27 @@ typedef struct {
 } Retained;
 static Retained ret[2];
 static bool replaying;
-
+#endif
+#ifdef __ANDROID__
 static void retained_invalidate(void) {
 	for (int i = 0; i < 2; ++i) ret[i].lastSig = 0;
 }
 #endif
 
 static DrawOp* rec(int screen, int kind) {
-#ifndef __ANDROID__
-	return NULL; /* only Android has retained views */
+#if !UI_RETAINED
+	return NULL; /* only Android and a leased panel have retained views */
 #else
 	if (replaying || screen < 0 || screen >= nScreens || !views[screens[screen].view].retained) return NULL;
 	Retained* rv = &ret[screens[screen].view];
 	if (rv->nOps == rv->capOps) {
-		rv->capOps = rv->capOps ? rv->capOps * 2 : 64;
-		rv->ops = realloc(rv->ops, sizeof(*rv->ops) * rv->capOps);
+		int cap = rv->capOps ? rv->capOps * 2 : 64;
+		DrawOp* ops = realloc(rv->ops, sizeof(*rv->ops) * cap);
+		if (!ops) {
+			static DrawOp dropped; /* (no room: the call is left out of this frame, not drawn past the recording) */
+			return &dropped;
+		}
+		rv->ops = ops, rv->capOps = cap;
 	}
 	DrawOp* o = &rv->ops[rv->nOps++];
 	memset(o, 0, sizeof(*o)); /* zeroed padding: ops are hashed bytewise */
@@ -1528,15 +1861,15 @@ static void rec_tex(DrawOp* o, SDL_Texture* const* tex) {
 	o->texVer = tex_version(o->texv);
 }
 
-#ifdef __ANDROID__
+#if UI_RETAINED
 static uint64_t ops_sig(const Retained* rv) {
 	uint64_t h = 1469598103934665603ull;
 	const unsigned char* p = (const unsigned char*) rv->ops;
 	for (size_t i = 0; i < sizeof(*rv->ops) * rv->nOps; ++i) h = (h ^ p[i]) * 1099511628211ull;
 	h = (h ^ (uint64_t) rv->nOps) * 1099511628211ull;
 	h = (h ^ (uint64_t) cfg->lcdStrength) * 1099511628211ull;
-	h = (h ^ (uint64_t) cfg->shader) * 1099511628211ull;
-	return h ^ (cfg->smooth ? 0x9e3779b97f4a7c15ull : 0);
+	h = (h ^ (uint64_t) shader_choice()) * 1099511628211ull;
+	return h ^ ((uint64_t) cfg->filter * 0x9e3779b97f4a7c15ull);
 }
 
 /* a screenshot wants a view's pixels (only readable while it's being drawn) */
@@ -1558,8 +1891,9 @@ static bool sw_render(int v) {
 	}
 	Uint64 t0 = SDL_GetPerformanceCounter();
 	SDL_Renderer* ren = views[v].ren;
-	bool second = views[v].offwin && !views[v].surf; /* the GPU second screen */
 	int vpY = 0; /* the second screen's viewport's top, in the game window's coordinates */
+#ifdef __ANDROID__
+	bool second = views[v].offwin && !views[v].surf; /* the GPU second screen */
 	if (second) {
 		if (!android_second_begin()) {
 			rv->state = 2; /* no window yet: try again next frame (lastSig unchanged) */
@@ -1576,6 +1910,7 @@ static bool sw_render(int v) {
 	} else if (!views[v].surf) {
 		android_second_restore(); /* SDL's own window surface current again */
 	}
+#endif
 	SDL_RenderSetClipRect(ren, NULL);
 	SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
 	SDL_RenderClear(ren);
@@ -1587,6 +1922,7 @@ static bool sw_render(int v) {
 		case OP_PIXELS: ui_image_pixels(o->screen, o->tex, o->a, o->b, o->mode, o->d); break;
 		case OP_FILL: ui_fill(o->screen, o->r, o->col); break;
 		case OP_ROUND: ui_fill_round(o->screen, o->r, o->col, o->a); break;
+		case OP_ROUND_TOP: fill_round_top(o->screen, o->r, o->col, o->a); break;
 		case OP_TEXT: ui_text(o->screen, o->a, o->b, o->c, o->text, o->col); break;
 		case OP_LABEL: font_text_raw(o->screen, o->d & 15, o->a, o->b, o->c, o->text, o->col, (o->d >> 4) - 1); break;
 		case OP_CLIP: ui_clip(o->screen, &o->r); break;
@@ -1601,13 +1937,14 @@ static bool sw_render(int v) {
 		rr.y += vpY;
 		swReadOk = SDL_RenderReadPixels(ren, &rr, SDL_PIXELFORMAT_ABGR8888, swReadDst, swReadPitch) == 0;
 	}
+#ifdef __ANDROID__
 	if (second) {
 		SDL_RenderFlush(ren);
 		android_second_end(); /* stays the current surface until the other view draws */
 		SDL_RenderSetViewport(ren, NULL); /* (queued: applies on the next draw, the game screen's) */
-	} else {
+	} else
+#endif
 		SDL_RenderPresent(ren);
-	}
 	rv->lastSig = sig;
 	rv->sinceDraw = 0;
 	rv->state = 1;
@@ -1641,7 +1978,7 @@ void ui_clear(void) {
 		SDL_SetRenderDrawColor(views[i].ren, 0, 0, 0, 255);
 		SDL_RenderClear(views[i].ren);
 	}
-#ifdef __ANDROID__
+#if UI_RETAINED
 	for (int i = 0; i < 2; ++i) ret[i].nOps = 0, ret[i].state = 0;
 #endif
 }
@@ -1659,8 +1996,6 @@ double ui_last_present_ms(int view) {
 
 #ifdef __ANDROID__
 static int syncWant = -1, syncApplied = -2;
-#endif
-#ifdef __ANDROID__
 static int budgetFirst = -1, deferred;
 static Uint64 budgetStart;
 static double budgetMs;
@@ -1749,6 +2084,10 @@ void ui_brightness(int top, int bottom) {
 	brightPct[1] = SDL_clamp(bottom, 20, 100);
 }
 
+/* tests: told each scripted screenshot's name as it's taken (GBADS_MODULE_TRACE) */
+static void (*shotHook)(const char* name);
+void ui_on_shot(void (*fn)(const char* name)) { shotHook = fn; }
+
 void ui_present(void) {
 	{
 		/* testing (issue #50): GBADS_TEST_PRESENT_STALL=MS,EVERY holds every
@@ -1762,6 +2101,7 @@ void ui_present(void) {
 		if (stallMs > 0 && stallEvery > 0 && ++presents % stallEvery == 0) SDL_Delay((Uint32) stallMs);
 	}
 	if (pendingShot[0]) {
+		if (shotHook) shotHook(pendingShot);
 		ui_screenshot(pendingShot);
 		pendingShot[0] = 0;
 	}
@@ -1835,12 +2175,27 @@ void ui_present(void) {
 		frames = 0;
 	}
 #else
+	lastRedraws = 0;
 	for (int i = 0; i < nViews; ++i) {
 		Uint64 vt0 = SDL_GetPerformanceCounter();
-		SDL_RenderPresent(views[i].ren);
+		if (!views[i].retained) {
+			SDL_RenderPresent(views[i].ren);
+			lastRedraws |= 1 << i;
+		}
+#if UI_RETAINED
+		else {
+			/* a leased panel's picture: drawn only when it changed, and
+			 * put on the panel when the panel can take it */
+			bool drawn = sw_render(i);
+			if (drawn) lastRedraws |= 1 << i;
+			drmlease_present(views[i].surf, drawn);
+		}
+#endif
 		lastPresentMs[i] = (double) (SDL_GetPerformanceCounter() - vt0) * 1000.0 / (double) SDL_GetPerformanceFrequency();
 	}
-	lastRedraws = (1 << nViews) - 1;
+#if UI_RETAINED
+	for (int i = 0; i < 2; ++i) ret[i].nOps = 0, ret[i].state = 0;
+#endif
 #endif
 }
 
@@ -1850,7 +2205,7 @@ SDL_Renderer* ui_ren(int screen) {
 
 /* align: where a picture shorter than the area goes (Screen.align) */
 static void fit_rect_at(const SDL_Rect* area, int w, int h, const char* mode, int align, SDL_Rect* out) {
-	if (!strcmp(mode, "stretch")) {
+	if (!strcmp(mode, "stretch") || !strcmp(mode, "edges")) {
 		*out = *area;
 		return;
 	}
@@ -2070,16 +2425,234 @@ static SDL_Texture* pipe_pattern(int v, int dw, int dh, int gw, int gh, int sh, 
  * screen pixels per cell when the picture is drawn at a whole multiple
  * (the grid then draws its lines a whole screen pixel each), else 0. */
 static SDL_Texture* shader_mask(int v, int dw, int dh, int gw, int gh, int kc) {
+	int sh = shader_choice();
 	bool small = dw < gw * 3 || dh < gh * 3;
-	if (cfg->shader == SH_GRID || cfg->shader <= SH_OFF || cfg->shader >= SH_COUNT || (cfg->shader == SH_SOFT && small)) {
+	if (sh == SH_GRID || sh <= SH_OFF || sh >= SH_COUNT || (sh == SH_SOFT && small)) {
 		/* (soft cells have no room for their falloff in under 3 screen
 		 * pixels: the fine grid there) */
-		return kc > 0 && !(cfg->shader == SH_SOFT && small) ? pipe_grid(v, gw, gh, kc, cfg->lcdStrength) : pipe_grid_fine(v, dw, dh, gw, gh, cfg->lcdStrength);
+		return kc > 0 && !(sh == SH_SOFT && small) ? pipe_grid(v, gw, gh, kc, cfg->lcdStrength) : pipe_grid_fine(v, dw, dh, gw, gh, cfg->lcdStrength);
 	}
-	return pipe_pattern(v, dw, dh, gw, gh, cfg->shader, cfg->lcdStrength);
+	return pipe_pattern(v, dw, dh, gw, gh, sh, cfg->lcdStrength);
 }
 
 static void draw_pixels(SDL_Renderer* ren, int v, SDL_Texture* src, int w, int h, const SDL_Rect* dstp, int lcd);
+
+/* Scale "edges", Edge stretch (a non-linear stretch, as TVs had for 4:3 on
+ * 16:9): the picture fills its area as with Stretch, but the stretch is
+ * uneven along the one direction that would have had black bars (across on a
+ * wide screen, down on a 4:3 one): the middle gets about half of the average
+ * stretch and the edges the rest, so what the eye is on keeps closer to its
+ * shape. The source position for v in [-1, 1] along that direction is
+ * g(v) = A v - (A - 1) v^3 (g(1) = 1; the stretch at the middle is the
+ * average / A, at the edges the average / (3 - 2A)). Set by ui_image_pixels
+ * for draw_pixels, whose copies onto the screen go through put_pic. */
+#define CURVE_MID_SHARE 0.54 /* the middle's share of the extra stretch: 16:9 -> 1.10x in the middle, 1.40x at the edges */
+#define CURVE_STEPS 64       /* strips the picture is drawn in */
+static int curveAxis;        /* 0 none, 1 across, 2 down */
+static double curveA;
+
+static void curve_setup(const SDL_Rect* area, int w, int h) {
+	SDL_Rect fit;
+	double avg = 1;
+	curveAxis = 0;
+	fit_rect_at(area, w, h, "fit", 0, &fit);
+	if (fit.w > 0 && fit.w < area->w) curveAxis = 1, avg = (double) area->w / fit.w;
+	else if (fit.h > 0 && fit.h < area->h) curveAxis = 2, avg = (double) area->h / fit.h;
+	curveA = SDL_min(avg / (1 + CURVE_MID_SHARE * (avg - 1)), 1.4); /* (A < 1.5 keeps g rising) */
+	if (curveA < 1.001) curveAxis = 0; /* bars of a pixel or two: plain stretch */
+}
+
+/* tex (all of it) onto dst: as SDL_RenderCopy, or through the curve */
+static void put_pic(SDL_Renderer* ren, SDL_Texture* tex, const SDL_Rect* dst) {
+	if (!curveAxis) {
+		SDL_RenderCopy(ren, tex, NULL, dst);
+		return;
+	}
+	SDL_Vertex vx[(CURVE_STEPS + 1) * 2];
+	int idx[CURVE_STEPS * 6];
+	const SDL_Color white = { 255, 255, 255, 255 };
+	double A = curveA;
+	for (int i = 0; i <= CURVE_STEPS; ++i) {
+		double t = (double) i / CURVE_STEPS, v = 2 * t - 1;
+		float u = (float) ((1 + A * v - (A - 1) * v * v * v) / 2);
+		u = u < 0 ? 0 : u > 1 ? 1 : u;
+		if (curveAxis == 1) {
+			float x = (float) (dst->x + t * dst->w);
+			vx[2 * i] = (SDL_Vertex) { { x, (float) dst->y }, white, { u, 0 } };
+			vx[2 * i + 1] = (SDL_Vertex) { { x, (float) (dst->y + dst->h) }, white, { u, 1 } };
+		} else {
+			float y = (float) (dst->y + t * dst->h);
+			vx[2 * i] = (SDL_Vertex) { { (float) dst->x, y }, white, { 0, u } };
+			vx[2 * i + 1] = (SDL_Vertex) { { (float) (dst->x + dst->w), y }, white, { 1, u } };
+		}
+	}
+	for (int i = 0; i < CURVE_STEPS; ++i) {
+		int* q = idx + i * 6;
+		q[0] = 2 * i, q[1] = 2 * i + 1, q[2] = 2 * i + 2;
+		q[3] = 2 * i + 1, q[4] = 2 * i + 3, q[5] = 2 * i + 2;
+	}
+	if (SDL_RenderGeometry(ren, tex, vx, (CURVE_STEPS + 1) * 2, idx, CURVE_STEPS * 6) < 0) SDL_RenderCopy(ren, tex, NULL, dst);
+}
+
+/* --- the curve on SDL's software renderer (the web build, regress runs):
+ * its geometry samples nearest only, which drops and doubles pixels when the
+ * stretch isn't even, so the picture is resampled here on the CPU instead.
+ * Sharp: each screen pixel is the average of the source area it covers (what
+ * a GPU's sharp-bilinear does); Smooth: linear between pixel centres. From
+ * the game's own pixels, or the shader's picture at a whole multiple (its grid
+ * drawn in), or the upscaler's result (the web build's, read back). */
+#define CURVE_TAPS 4
+typedef struct {
+	int n, in, axis;  /* output and input length, 0/1/2 as curveAxis for this direction */
+	double A;
+	bool box;
+	int (*tap)[CURVE_TAPS]; /* per output pixel: source index of each tap (-1: none) */
+	int (*wt)[CURVE_TAPS];  /* and its weight, out of 256 */
+} CurveTable;
+static CurveTable curveTabs[2]; /* across, down */
+static uint32_t *curveIn, *curveMid, *curveOut;
+static size_t curveInN, curveMidN, curveOutN;
+static SDL_Texture* curveTex[2];
+static int curveTexW[2], curveTexH[2];
+
+static bool grow(uint32_t** p, size_t* have, size_t n) {
+	if (*have >= n) return true;
+	free(*p);
+	*p = malloc(n * 4);
+	*have = *p ? n : 0;
+	return *p != NULL;
+}
+
+/* where the output edge at t (0..1) falls in the source (0..in) */
+static double curve_edge(const CurveTable* c, double t) {
+	if (!c->axis) return c->in * t;
+	double v = 2 * t - 1;
+	return c->in * (1 + c->A * v - (c->A - 1) * v * v * v) / 2;
+}
+
+static const CurveTable* curve_table(int dir, int n, int in, bool curved, bool box) {
+	CurveTable* c = &curveTabs[dir];
+	int axis = curved ? 1 : 0;
+	double A = curved ? curveA : 1;
+	if (c->tap && c->n == n && c->in == in && c->axis == axis && c->A == A && c->box == box) return c;
+	free(c->tap), free(c->wt);
+	c->n = n, c->in = in, c->axis = axis, c->A = A, c->box = box;
+	c->tap = malloc(sizeof(*c->tap) * n);
+	c->wt = malloc(sizeof(*c->wt) * n);
+	if (!c->tap || !c->wt) {
+		free(c->tap), free(c->wt);
+		c->tap = NULL, c->wt = NULL;
+		return NULL;
+	}
+	for (int i = 0; i < n; ++i) {
+		double w[CURVE_TAPS] = { 0 };
+		int j[CURVE_TAPS];
+		for (int k = 0; k < CURVE_TAPS; ++k) j[k] = -1;
+		if (box) {
+			double a = curve_edge(c, (double) i / n), b = curve_edge(c, (double) (i + 1) / n);
+			if (b - a < 1e-9) b = a + 1e-9;
+			int j0 = (int) floor(a);
+			for (int k = 0; k < CURVE_TAPS && j0 + k < b; ++k) {
+				double lo = SDL_max(a, j0 + k), hi = SDL_min(b, j0 + k + 1.0);
+				if (hi > lo) j[k] = SDL_clamp(j0 + k, 0, in - 1), w[k] = (hi - lo) / (b - a);
+			}
+		} else {
+			double m = (curve_edge(c, (double) i / n) + curve_edge(c, (double) (i + 1) / n)) / 2 - 0.5;
+			int j0 = (int) floor(m);
+			double f = m - j0;
+			j[0] = SDL_clamp(j0, 0, in - 1), w[0] = 1 - f;
+			j[1] = SDL_clamp(j0 + 1, 0, in - 1), w[1] = f;
+		}
+		int sum = 0, big = 0;
+		for (int k = 0; k < CURVE_TAPS; ++k) {
+			c->tap[i][k] = j[k];
+			c->wt[i][k] = j[k] < 0 ? 0 : (int) lround(w[k] * 256);
+			sum += c->wt[i][k];
+			if (c->wt[i][k] > c->wt[i][big]) big = k;
+		}
+		c->wt[i][big] += 256 - sum; /* (the weights add up to 256 exactly) */
+	}
+	return c;
+}
+
+/* one row (or column, with step) of n outputs from src by table t */
+static void curve_run(const CurveTable* t, const uint32_t* src, int sstep, uint32_t* dst, int dstep) {
+	for (int i = 0; i < t->n; ++i) {
+		unsigned r = 0, g = 0, b = 0, a = 0;
+		for (int k = 0; k < CURVE_TAPS; ++k) {
+			int wgt = t->wt[i][k];
+			if (!wgt) continue;
+			uint32_t p = src[t->tap[i][k] * sstep];
+			r += (p & 0xFF) * wgt, g += ((p >> 8) & 0xFF) * wgt, b += ((p >> 16) & 0xFF) * wgt, a += (p >> 24) * wgt;
+		}
+		dst[i * dstep] = ((a >> 8) << 24) | ((b >> 8) << 16) | ((g >> 8) << 8) | (r >> 8);
+	}
+}
+
+static bool ren_software(SDL_Renderer* ren) {
+	SDL_RendererInfo ri;
+	return SDL_GetRendererInfo(ren, &ri) == 0 && !strcmp(ri.name, "software");
+}
+
+static SDL_Texture* shader_mask(int v, int dw, int dh, int gw, int gh, int kc);
+
+/* draw_pixels for the curve on the software renderer; false: couldn't (draw as usual) */
+static bool curve_sw(SDL_Renderer* ren, int v, SDL_Texture* src, int w, int h, const SDL_Rect* dst, int lcd, bool game) {
+	const uint32_t* pix = NULL;
+	int pw = w, ph = h;
+	bool box = cfg->filter != FILTER_SMOOTH;
+	int up = game ? upscale_factor(cfg->filter) : 0;
+	if (up && upscale_run(ren, src, w, h, cfg->filter)) {
+		pix = upscale_pixels(&pw, &ph);
+		box = true;
+	}
+	if (!pix) {
+		/* the game's pixels (or with the shader's grid, the picture at a
+		 * whole multiple with the grid drawn in), read back from a target */
+		int k = 1, c = lcd > 1 ? lcd : 1;
+		if (lcd) {
+			k = SDL_max(1, SDL_min(dst->w / w, dst->h / h));
+			if (k * c < 3) k = (3 + c - 1) / c; /* room for the grid's lines */
+			box = true;
+		}
+		pw = w * k, ph = h * k;
+		SDL_Texture* target = pipe_target(v, pw, ph);
+		if (!target || !grow(&curveIn, &curveInN, (size_t) pw * ph)) return false;
+		SDL_Rect clipRect;
+		SDL_RenderGetClipRect(ren, &clipRect);
+		bool clipped = SDL_RenderIsClipEnabled(ren);
+		SDL_RenderSetClipRect(ren, NULL);
+		SDL_SetRenderTarget(ren, target);
+		SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+		SDL_RenderClear(ren);
+		SDL_SetTextureScaleMode(src, SDL_ScaleModeNearest);
+		SDL_RenderCopy(ren, src, NULL, NULL);
+		if (lcd) {
+			SDL_Texture* grid = shader_mask(v, pw, ph, w / c, h / c, k * c);
+			if (grid) SDL_RenderCopy(ren, grid, NULL, NULL);
+		}
+		int rd = SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ABGR8888, curveIn, pw * 4);
+		SDL_SetRenderTarget(ren, NULL);
+		if (clipped) SDL_RenderSetClipRect(ren, &clipRect);
+		if (rd != 0) return false;
+		pix = curveIn;
+	}
+	const CurveTable* tx = curve_table(0, dst->w, pw, curveAxis == 1, box);
+	const CurveTable* ty = curve_table(1, dst->h, ph, curveAxis == 2, box);
+	if (!tx || !ty || !grow(&curveMid, &curveMidN, (size_t) dst->w * ph) || !grow(&curveOut, &curveOutN, (size_t) dst->w * dst->h)) return false;
+	for (int y = 0; y < ph; ++y) curve_run(tx, pix + (size_t) y * pw, 1, curveMid + (size_t) y * dst->w, 1);
+	for (int x = 0; x < dst->w; ++x) curve_run(ty, curveMid + x, dst->w, curveOut + x, dst->w);
+	if (!curveTex[v] || curveTexW[v] != dst->w || curveTexH[v] != dst->h) {
+		if (curveTex[v]) SDL_DestroyTexture(curveTex[v]);
+		curveTex[v] = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, dst->w, dst->h);
+		curveTexW[v] = dst->w, curveTexH[v] = dst->h;
+		if (!curveTex[v]) return false;
+		SDL_SetTextureBlendMode(curveTex[v], SDL_BLENDMODE_NONE);
+	}
+	SDL_UpdateTexture(curveTex[v], NULL, curveOut, dst->w * 4);
+	SDL_RenderCopy(ren, curveTex[v], NULL, dst);
+	return true;
+}
 
 void ui_image_pixels(int screen, SDL_Texture* const* texPerView, int w, int h, const char* mode, int lcd) {
 	RECORD(screen, OP_PIXELS) {
@@ -2105,20 +2678,40 @@ void ui_image_pixels(int screen, SDL_Texture* const* texPerView, int w, int h, c
 		if (hadClip) SDL_IntersectRect(&prev, &s->rect, &c); /* inside an existing ui_clip */
 		SDL_RenderSetClipRect(ren, &c);
 	}
+	if (!strcmp(mode, "edges")) curve_setup(&pic, w, h);
 	draw_pixels(ren, v, src, w, h, &dst, lcd);
+	curveAxis = 0;
 	if (clip) SDL_RenderSetClipRect(ren, hadClip ? &prev : NULL);
 }
 
 /* ui_image_pixels' drawing, into dst on the current (screen) target. */
 static void draw_pixels(SDL_Renderer* ren, int v, SDL_Texture* src, int w, int h, const SDL_Rect* dstp, int lcd) {
 	SDL_Rect dst = *dstp;
+	bool game = lcd & UI_PIX_GAME;
+	lcd &= ~UI_PIX_GAME;
+	if (curveAxis && ren_software(ren) && curve_sw(ren, v, src, w, h, &dst, lcd, game)) return;
+	int up = game ? upscale_factor(cfg->filter) : 0;
+	if (up) {
+		/* the scaling filter's upscaler (issue #89): the game's picture made
+		 * 2x / 4x on the GPU, then scaled to its place (linear unless it is
+		 * already the size), without the grid. Where the renderer can't
+		 * (not OpenGL ES 2), the picture is drawn as with Sharp. */
+		SDL_Texture* big = upscale_run(ren, src, w, h, cfg->filter);
+		if (big) {
+			bool same = dst.w == w * up && dst.h == h * up;
+			SDL_SetTextureScaleMode(big, same ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+			put_pic(ren, big, &dst);
+			return;
+		}
+	}
+	bool smooth = cfg->filter == FILTER_SMOOTH;
 	int k = SDL_max(1, SDL_min(dst.w / w, dst.h / h));
 	bool exact = dst.w == w * k && dst.h == h * k;
 	int c = lcd > 1 ? lcd : 1; /* source pixels per grid cell, each way */
 	int gw = w / c, gh = h / c;
-	if (!lcd && (exact || cfg->smooth)) {
-		SDL_SetTextureScaleMode(src, cfg->smooth ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
-		SDL_RenderCopy(ren, src, NULL, &dst);
+	if (!lcd && (exact || smooth)) {
+		SDL_SetTextureScaleMode(src, smooth ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+		put_pic(ren, src, &dst);
 		return;
 	}
 	if (lcd && exact && k * c >= 3) {
@@ -2126,9 +2719,9 @@ static void draw_pixels(SDL_Renderer* ren, int v, SDL_Texture* src, int w, int h
 		 * No render-target switch, so tiled GPUs don't have to flush and
 		 * reload the whole framebuffer. */
 		SDL_SetTextureScaleMode(src, SDL_ScaleModeNearest);
-		SDL_RenderCopy(ren, src, NULL, &dst);
+		put_pic(ren, src, &dst);
 		SDL_Texture* grid = shader_mask(v, dst.w, dst.h, gw, gh, k * c);
-		if (grid) SDL_RenderCopy(ren, grid, NULL, &dst);
+		if (grid) put_pic(ren, grid, &dst);
 		return;
 	}
 	if (lcd && (dst.w < gw * 3 || dst.h < gh * 3)) {
@@ -2136,17 +2729,17 @@ static void draw_pixels(SDL_Renderer* ren, int v, SDL_Texture* src, int w, int h
 		 * then a grid made at the screen's resolution on top */
 		draw_pixels(ren, v, src, w, h, &dst, 0);
 		SDL_Texture* grid = shader_mask(v, dst.w, dst.h, gw, gh, 0);
-		if (grid) SDL_RenderCopy(ren, grid, NULL, &dst);
+		if (grid) put_pic(ren, grid, &dst);
 		return;
 	}
 	SDL_Texture* target = SDL_RenderTargetSupported(ren) ? pipe_target(v, w * k, h * k) : NULL;
 	if (!target) {
 		/* no render targets: draw directly, grid on top */
 		SDL_SetTextureScaleMode(src, SDL_ScaleModeNearest);
-		SDL_RenderCopy(ren, src, NULL, &dst);
+		put_pic(ren, src, &dst);
 		if (lcd) {
 			SDL_Texture* grid = shader_mask(v, w * k, h * k, gw, gh, k * c);
-			if (grid) SDL_RenderCopy(ren, grid, NULL, &dst);
+			if (grid) put_pic(ren, grid, &dst);
 		}
 		return;
 	}
@@ -2164,7 +2757,7 @@ static void draw_pixels(SDL_Renderer* ren, int v, SDL_Texture* src, int w, int h
 	SDL_SetRenderTarget(ren, NULL);
 	if (clipped) SDL_RenderSetClipRect(ren, &clipRect);
 	SDL_SetTextureScaleMode(target, exact ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
-	SDL_RenderCopy(ren, target, NULL, &dst);
+	put_pic(ren, target, &dst);
 }
 
 SDL_Rect ui_image_rect(int screen, int w, int h, const char* mode) {
@@ -2192,6 +2785,11 @@ void ui_dim(int screen, Uint8 alpha) {
 }
 
 float ui_px(int screen) {
+	if (stripMode && screen == 0) return stripPx;
+	/* the game list on one display: on a part much taller than wide its sizes follow the
+	 * width, so the header's buttons fit (GEN-19) */
+	if (oneDisplay && face == UI_FACE_LIST && screen == ui_touch_screen())
+		return SDL_max(2.0f, SDL_min(screens[screen].rect.h / 192.0f, screens[screen].rect.w / 160.0f));
 	return SDL_max(2.0f, screens[screen].rect.h / 192.0f);
 }
 
@@ -2291,6 +2889,9 @@ static FileCrc fileCrc[FILE_CRC_MAX];
 static int nFileCrc;
 static bool fileCrcLoaded;
 static char fileCrcPath[1200];
+static pthread_mutex_t fileCrcLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fileCrcWake = PTHREAD_COND_INITIALIZER;
+/* (fileCrcLock held for all of these) */
 static void file_crc_load(const Config* c) {
 	if (fileCrcLoaded) return;
 	fileCrcLoaded = true;
@@ -2310,53 +2911,222 @@ static void file_crc_load(const Config* c) {
 	}
 	fclose(f);
 }
-static uint32_t rom_file_crc(const Config* c, const char* rom, bool compute) {
-	struct stat st;
-	if (!rom || !*rom || stat(rom, &st)) return 0;
-	file_crc_load(c);
+static const FileCrc* file_crc_find(const char* rom, const struct stat* st) {
 	for (int i = 0; i < nFileCrc; ++i)
-		if (fileCrc[i].size == st.st_size && fileCrc[i].mtime == st.st_mtime && !strcmp(fileCrc[i].path, rom)) return fileCrc[i].crc;
-	if (!compute) return 0;
-	size_t n = 0;
-	uint8_t* buf = emu_rom_read_all(rom, &n);
-	uint32_t crc = buf ? doCrc32(buf, n) : 0;
-	free(buf);
-	if (!crc) return 0;
-	FileCrc e = { .size = st.st_size, .mtime = st.st_mtime, .crc = crc };
+		if (fileCrc[i].size == st->st_size && fileCrc[i].mtime == st->st_mtime && !strcmp(fileCrc[i].path, rom)) return &fileCrc[i];
+	return NULL;
+}
+static bool fileCrcDirty;
+static void file_crc_put(const char* rom, const struct stat* st, uint32_t crc) {
+	FileCrc e = { .size = st->st_size, .mtime = st->st_mtime, .crc = crc };
 	snprintf(e.path, sizeof(e.path), "%s", rom);
 	int at = nFileCrc < FILE_CRC_MAX ? nFileCrc++ : 0; /* (full: the oldest slot) */
 	for (int i = 0; i < nFileCrc; ++i)
 		if (!strcmp(fileCrc[i].path, rom)) at = i; /* (the file changed: its entry again) */
 	fileCrc[at] = e;
-	FILE* f = fopen(fileCrcPath, "w");
-	if (f) {
-		for (int i = 0; i < nFileCrc; ++i) fprintf(f, "%lld %lld %08X %s\n", fileCrc[i].size, fileCrc[i].mtime, fileCrc[i].crc, fileCrc[i].path);
-		fclose(f);
+	if (crc) fileCrcDirty = true; /* (one that couldn't be read is remembered for this run only) */
+}
+/* The cache file, written with the lock NOT held: the list asks for checksums
+ * on the main thread, and a write to a busy SD card must not hold it up. */
+static pthread_mutex_t fileCrcWriteLock = PTHREAD_MUTEX_INITIALIZER;
+static void file_crc_flush(void) {
+	pthread_mutex_lock(&fileCrcWriteLock);
+	pthread_mutex_lock(&fileCrcLock);
+	char* text = NULL;
+	char path[sizeof(fileCrcPath)];
+	if (fileCrcDirty) {
+		fileCrcDirty = false;
+		snprintf(path, sizeof(path), "%s", fileCrcPath);
+		size_t cap = (size_t) nFileCrc * 1400 + 16, len = 0;
+		text = malloc(cap);
+		for (int i = 0; text && i < nFileCrc; ++i)
+			if (fileCrc[i].crc) len += (size_t) snprintf(text + len, cap - len, "%lld %lld %08X %s\n", fileCrc[i].size, fileCrc[i].mtime, fileCrc[i].crc, fileCrc[i].path);
+		if (text) text[len] = 0;
 	}
+	pthread_mutex_unlock(&fileCrcLock);
+	if (text) {
+		FILE* f = fopen(path, "w");
+		if (f) {
+			fputs(text, f);
+			fclose(f);
+		}
+		free(text);
+	}
+	pthread_mutex_unlock(&fileCrcWriteLock);
+}
+
+static uint32_t file_crc_read(const char* rom) {
+	size_t n = 0;
+	uint8_t* buf = emu_rom_read_all(rom, &n);
+	uint32_t crc = buf ? doCrc32(buf, n) : 0;
+	free(buf);
 	return crc;
 }
 
-/* The extracted logo's file (whether it exists yet or not): per code, or
- * (profile logoPerRom) per ROM file, so romhacks that share a code each
- * get their own; a patched game is its base ROM file, so it has the base's.
- * False when the ROM file's checksum isn't known yet and isn't being asked
- * for (compute): nothing to look for, or make, yet. */
-static bool extracted_path_for(const Config* c, const char* rom, const char* code, char* path, size_t n, bool compute) {
+/* In the game list (ui_file_crc_async) a checksum that isn't known yet is
+ * worked out on a thread of its own, the newest request first (the game under
+ * the cursor), and the list reloads its logos when one is done. Reading a
+ * 16 MB Pokemon ROM from the SD card on the main thread, as the first look at
+ * each file used to, stopped the list for a good part of a second. */
+#define FILE_CRC_QUEUE 64
+static char fileCrcQueue[FILE_CRC_QUEUE][1200];
+static int nFileCrcQueue;
+static char fileCrcBusy[1200];
+static bool fileCrcAsync, fileCrcThread;
+static volatile unsigned fileCrcGen;
+
+static void* file_crc_worker(void* arg) {
+	(void) arg;
+#ifndef __wasi__
+#if defined(__APPLE__)
+	pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0); /* (macOS: SYS_gettid is another call there) */
+#else
+	setpriority(PRIO_PROCESS, (id_t) syscall(SYS_gettid), 10); /* (below the list, above the logo extraction's 19) */
+#endif
+#endif
+	pthread_mutex_lock(&fileCrcLock);
+	for (;;) {
+		while (!nFileCrcQueue) pthread_cond_wait(&fileCrcWake, &fileCrcLock);
+		char rom[1200];
+		snprintf(rom, sizeof(rom), "%s", fileCrcQueue[--nFileCrcQueue]); /* (the newest) */
+		snprintf(fileCrcBusy, sizeof(fileCrcBusy), "%s", rom);
+		struct stat st;
+		bool ok = stat(rom, &st) == 0 && !file_crc_find(rom, &st);
+		pthread_mutex_unlock(&fileCrcLock);
+		uint32_t crc = ok ? file_crc_read(rom) : 0;
+		pthread_mutex_lock(&fileCrcLock);
+		if (ok) file_crc_put(rom, &st, crc);
+		fileCrcBusy[0] = 0;
+		++fileCrcGen;
+		pthread_mutex_unlock(&fileCrcLock);
+		file_crc_flush();
+		pthread_mutex_lock(&fileCrcLock);
+	}
+	return NULL;
+}
+
+void ui_file_crc_async(bool on) {
+#ifndef __wasi__
+	/* (not with GBADS_SYNC: the regression tests want it done there and then) */
+	fileCrcAsync = on && !(getenv("GBADS_SYNC") && atoi(getenv("GBADS_SYNC")));
+#else
+	(void) on;
+#endif
+}
+
+uint32_t ui_file_crc_generation(void) {
+	return __atomic_load_n(&fileCrcGen, __ATOMIC_SEQ_CST);
+}
+
+bool ui_file_crc_pending(void) {
+	pthread_mutex_lock(&fileCrcLock);
+	bool p = nFileCrcQueue > 0 || fileCrcBusy[0];
+	pthread_mutex_unlock(&fileCrcLock);
+	return p;
+}
+
+/* 0 if it isn't known (compute false), or can't be read. *pending: it's being
+ * worked out (the list asked for it: ask again when ui_file_crc_generation moves). */
+static uint32_t rom_file_crc_ex(const Config* c, const char* rom, bool compute, bool* pending) {
+	struct stat st;
+	if (pending) *pending = false;
+	if (!rom || !*rom || stat(rom, &st)) return 0;
+	pthread_mutex_lock(&fileCrcLock);
+	file_crc_load(c);
+	const FileCrc* hit = file_crc_find(rom, &st);
+	if (hit) {
+		uint32_t crc = hit->crc;
+		pthread_mutex_unlock(&fileCrcLock);
+		return crc;
+	}
+	if (!compute) {
+		pthread_mutex_unlock(&fileCrcLock);
+		return 0;
+	}
+	if (fileCrcAsync) {
+		bool queued = !strcmp(fileCrcBusy, rom);
+		for (int i = 0; i < nFileCrcQueue && !queued; ++i) queued = !strcmp(fileCrcQueue[i], rom);
+		if (!queued) {
+			if (nFileCrcQueue == FILE_CRC_QUEUE) { /* (full: the oldest goes) */
+				memmove(fileCrcQueue[0], fileCrcQueue[1], sizeof(fileCrcQueue[0]) * (FILE_CRC_QUEUE - 1));
+				--nFileCrcQueue;
+			}
+			snprintf(fileCrcQueue[nFileCrcQueue++], sizeof(fileCrcQueue[0]), "%s", rom);
+		} else {
+			/* asked for again: the one under the cursor is first */
+			for (int i = 0; i < nFileCrcQueue; ++i) {
+				if (strcmp(fileCrcQueue[i], rom)) continue;
+				char tmp[1200];
+				snprintf(tmp, sizeof(tmp), "%s", fileCrcQueue[i]);
+				memmove(fileCrcQueue[i], fileCrcQueue[i + 1], sizeof(fileCrcQueue[0]) * (nFileCrcQueue - i - 1));
+				snprintf(fileCrcQueue[nFileCrcQueue - 1], sizeof(fileCrcQueue[0]), "%s", tmp);
+				break;
+			}
+		}
+		if (!fileCrcThread) {
+			pthread_t t;
+			fileCrcThread = pthread_create(&t, NULL, file_crc_worker, NULL) == 0;
+			if (fileCrcThread) pthread_detach(t);
+		}
+		if (fileCrcThread) {
+			pthread_cond_signal(&fileCrcWake);
+			pthread_mutex_unlock(&fileCrcLock);
+			if (pending) *pending = true;
+			return 0;
+		}
+		/* (no thread: now, below) */
+	}
+	pthread_mutex_unlock(&fileCrcLock);
+	uint32_t crc = file_crc_read(rom);
+	pthread_mutex_lock(&fileCrcLock);
+	if (crc) file_crc_put(rom, &st, crc);
+	pthread_mutex_unlock(&fileCrcLock);
+	file_crc_flush();
+	return crc;
+}
+static uint32_t rom_file_crc(const Config* c, const char* rom, bool compute) {
+	return rom_file_crc_ex(c, rom, compute, NULL);
+}
+
+/* crc (the ROM's CRC32 as played, 0 if not known yet) if it's a known mod's,
+ * which has a logo of its own (GEN-20), else 0 */
+static uint32_t logo_mod(const char* code, uint32_t crc) {
+	const MapProfile* prof = profile_find(code);
+	return prof && !prof->logoPerRom && profile_known_mod(code, crc) ? crc : 0;
+}
+
+/* The extracted logo's file (whether it exists yet or not): per code (a
+ * known mod's own, GEN-20), or (profile logoPerRom) per ROM file, so
+ * romhacks that share a code each get their own; a patched game is its base
+ * ROM file, so it has the base's. False when the ROM file's checksum isn't
+ * known yet and isn't being asked for (compute): nothing to look for, or
+ * make, yet. */
+static bool extracted_path_for(const Config* c, const char* rom, const char* code, uint32_t crc, char* path, size_t n,
+                               bool compute) {
 	const MapProfile* prof = profile_find(code);
 	if (prof && prof->logoPerRom) {
-		uint32_t crc = rom_file_crc(c, rom, compute);
+		bool pending;
+		uint32_t crc = rom_file_crc_ex(c, rom, compute, &pending);
 		if (crc) {
 			snprintf(path, n, "%s/logos/%.4s-%08X.png", c->stateDir, code, crc);
 			return true;
 		}
+		if (pending) { /* (the game list: the checksum's being worked out; no path yet) */
+			path[0] = 0;
+			return false;
+		}
 		if (!compute) return false;
 	}
-	if (prof && prof->logo.rev) snprintf(path, n, "%s/logos/%.4s-r%d.png", c->stateDir, code, prof->logo.rev);
-	else snprintf(path, n, "%s/logos/%.4s.png", c->stateDir, code);
+	uint32_t mod = logo_mod(code, crc);
+	char key[16];
+	if (mod) snprintf(key, sizeof(key), "%.4s-%08X", code, mod);
+	else snprintf(key, sizeof(key), "%.4s", code);
+	if (prof && prof->logo.rev) snprintf(path, n, "%s/logos/%s-r%d.png", c->stateDir, key, prof->logo.rev);
+	else snprintf(path, n, "%s/logos/%s.png", c->stateDir, key);
 	return true;
 }
-static void extracted_path(const Config* c, const char* rom, const char* code, char* path, size_t n) {
-	extracted_path_for(c, rom, code, path, n, true);
+static void extracted_path(const Config* c, const char* rom, const char* code, uint32_t crc, char* path, size_t n) {
+	extracted_path_for(c, rom, code, crc, path, n, true);
 }
 
 /* The player's own logo for the game: <asset_dir>/logos/<CODE>.png|.bmp|.jpg|.webp. */
@@ -2409,7 +3179,8 @@ static void logo_dir_list(const char* dir) {
 			if (!nn) break;
 			logoDir.names = nn;
 		}
-		logoDir.names[logoDir.n++] = strdup(e->d_name);
+		char* name = strdup(e->d_name);
+		if (name) logoDir.names[logoDir.n++] = name;
 	}
 	closedir(d);
 }
@@ -2493,44 +3264,32 @@ static SDL_Surface* trim_alpha(SDL_Surface* s, bool jpeg) {
 SDL_Surface* ui_resample(const SDL_Surface* s, int w, int h) {
 	SDL_Surface* o = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_RGBA32);
 	if (!o) return NULL;
-	for (int y = 0; y < h; ++y) {
-		int sy0 = y * s->h / h, sy1 = SDL_max(sy0 + 1, (y + 1) * s->h / h);
-		uint8_t* out = (uint8_t*) o->pixels + (size_t) y * o->pitch;
-		for (int x = 0; x < w; ++x) {
-			int sx0 = x * s->w / w, sx1 = SDL_max(sx0 + 1, (x + 1) * s->w / w);
-			double r = 0, g = 0, b = 0, a = 0;
-			int cnt = 0;
-			for (int yy = sy0; yy < sy1; ++yy) {
-				const uint8_t* p = (const uint8_t*) s->pixels + (size_t) yy * s->pitch + (size_t) sx0 * 4;
-				for (int xx = sx0; xx < sx1; ++xx, p += 4) {
-					r += p[0] * p[3], g += p[1] * p[3], b += p[2] * p[3], a += p[3];
-					++cnt;
-				}
-			}
-			uint8_t* q = out + x * 4;
-			if (a > 0) {
-				q[0] = (uint8_t) lround(r / a), q[1] = (uint8_t) lround(g / a), q[2] = (uint8_t) lround(b / a);
-			} else {
-				q[0] = q[1] = q[2] = 0;
-			}
-			q[3] = (uint8_t) lround(a / cnt);
-		}
-	}
+	rgba_resample(s->pixels, s->w, s->h, s->pitch, o->pixels, w, h, o->pitch); /* (rgba.c) */
 	return o;
 }
 
-/* What the last logo choice was, for the log (once per change) and bug
- * reports: which file, or why a custom one wasn't used. */
+/* What the last logo choice was, for bug reports (which file, or why a custom
+ * one wasn't used), and for the log: each game's once, and again when it
+ * changes. The game list asks for the games around the selection too, so the
+ * notes alternate: the last 64 logged are remembered (by a hash), not only
+ * the one before, or every move of the selection logged them all again. */
 static char logoNote[1400];
 static char logoBad[1200]; /* the last custom logo that couldn't be read */
+static uint64_t logoLogged[64];
+static unsigned logoLoggedNext;
 static void logo_note(const char* fmt, ...) {
 	char s[sizeof(logoNote)];
 	va_list ap;
 	va_start(ap, fmt);
 	vsnprintf(s, sizeof(s), fmt, ap);
 	va_end(ap);
-	if (!strcmp(s, logoNote)) return;
 	snprintf(logoNote, sizeof(logoNote), "%s", s);
+	uint64_t h = 14695981039346656037ull; /* (FNV-1a) */
+	for (const char* p = s; *p; ++p) h = (h ^ (unsigned char) *p) * 1099511628211ull;
+	h |= 1; /* (never 0, the empty slot) */
+	for (size_t i = 0; i < sizeof(logoLogged) / sizeof(logoLogged[0]); ++i)
+		if (logoLogged[i] == h) return;
+	logoLogged[logoLoggedNext++ % (sizeof(logoLogged) / sizeof(logoLogged[0]))] = h;
 	fprintf(stderr, "logo: %s\n", s);
 }
 
@@ -2554,9 +3313,10 @@ static bool scrapedProvisional;
  * 1); otherwise LOGO_SUB pixels per GBA pixel, the same size on the screen. */
 #define LOGO_BOX_W 224
 #define LOGO_BOX_H 64
-static SDL_Surface* sized_surface(const Config* c, const char* rom, const char* src, const char* code, int* sub) {
+static SDL_Surface* sized_surface(const Config* c, const char* rom, const char* src, const char* code, uint32_t crc,
+                                  int* sub) {
 	char ref[1200];
-	extracted_path(c, rom, code, ref, sizeof(ref));
+	extracted_path(c, rom, code, crc, ref, sizeof(ref));
 	int refH = 0;
 	SDL_Surface* r = image_load(ref);
 	if (r) refH = r->h, SDL_FreeSurface(r);
@@ -2618,11 +3378,9 @@ void ui_notice(const char* title, const char* line) {
  * frames it froze the game for seconds (the whole file read and summed from the SD
  * card), so it's done here, with a screen saying so, before the game starts. */
 void ui_game_prepare(const Config* c, const char* rom) {
-	uint8_t h[0xB0];
-	if (!rom || !emu_rom_header(rom, h, sizeof(h))) return;
+	uint8_t h[EMU_HEADER_MAX];
 	char code[5];
-	memcpy(code, h + 0xAC, 4);
-	code[4] = 0;
+	if (!rom || !emu_rom_header(rom, h, sizeof(h)) || !emu_rom_code(h, sizeof(h), code)) return;
 	const MapProfile* prof = profile_find(code);
 	if (!prof || !prof->logoPerRom) return;
 	/* what the first start of a ROM file has to do: sum the file (above), and
@@ -2631,13 +3389,13 @@ void ui_game_prepare(const Config* c, const char* rom) {
 	bool needCrc = !rom_file_crc(c, rom, false);
 	char logoFile[1200] = "";
 	bool needLogo = false;
-	if (!needCrc && ui_logo_source(c, rom, code, logoFile, sizeof(logoFile)) == LOGO_EXTRACTED) needLogo = !file_there(logoFile);
+	if (!needCrc && ui_logo_source(c, rom, code, 0, logoFile, sizeof(logoFile)) == LOGO_EXTRACTED) needLogo = !file_there(logoFile) && !logo_failed(logoFile);
 	if (!needCrc && !needLogo) return;
 	ui_notice("Initializing game...", tr("Only the first time for each game"));
 	if (needCrc) {
 		fprintf(stderr, "initializing %s: reading the ROM for its checksum\n", rom);
 		rom_file_crc(c, rom, true);
-		if (ui_logo_source(c, rom, code, logoFile, sizeof(logoFile)) == LOGO_EXTRACTED) needLogo = !file_there(logoFile);
+		if (ui_logo_source(c, rom, code, 0, logoFile, sizeof(logoFile)) == LOGO_EXTRACTED) needLogo = !file_there(logoFile) && !logo_failed(logoFile);
 	}
 	if (needLogo && logoFile[0]) {
 		char dir[1200];
@@ -2648,12 +3406,12 @@ void ui_game_prepare(const Config* c, const char* rom) {
 	}
 }
 
-void ui_logo_queue(const Config* c, const char* rom, const char* code) {
+void ui_logo_queue(const Config* c, const char* rom, const char* code, uint32_t crc) {
 	char path[1200];
 	snprintf(path, sizeof(path), "%s/logos", c->stateDir);
 	mkdirs(path);
-	if (!extracted_path_for(c, rom, code, path, sizeof(path), false)) return; /* (its checksum isn't known yet) */
-	if (!file_there(path)) logo_request(rom, code, path);
+	if (!extracted_path_for(c, rom, code, crc, path, sizeof(path), false)) return; /* (its checksum isn't known yet) */
+	if (!file_there(path)) logo_request(rom, code, logo_mod(code, crc), path);
 }
 
 bool ui_logo_provisional(void) {
@@ -2662,7 +3420,7 @@ bool ui_logo_provisional(void) {
 
 /* The logo's source: the player's own file or a scraped one (path set), or
  * the extracted one (path its file, which may not exist yet). */
-int ui_logo_source(const Config* c, const char* rom, const char* code, char* path, size_t n) {
+int ui_logo_source(const Config* c, const char* rom, const char* code, uint32_t crc, char* path, size_t n) {
 	if (c->customLogos != CL_OFF) {
 		/* (one that couldn't be read keeps saying so: sized_surface falls back) */
 		if (own_logo(c, code, path, n)) {
@@ -2684,7 +3442,7 @@ int ui_logo_source(const Config* c, const char* rom, const char* code, char* pat
 			logo_note("the game's own: nothing in %s (%d images) named after %s, and no logos/%.4s.png", c->logoFolder,
 			          logoDir.n, base ? base + 1 : rom ? rom : "?", code);
 	} else logo_note("the game's own (no logos/%.4s.png, logo_folder not set)", code);
-	extracted_path(c, rom, code, path, n);
+	extracted_path(c, rom, code, crc, path, n);
 	return LOGO_EXTRACTED;
 }
 
@@ -2693,40 +3451,52 @@ bool ui_logo_custom(const Config* c, const char* rom, const char* code) {
 	return own_logo(c, code, path, sizeof(path)) || scraped_logo(c, rom, path, sizeof(path));
 }
 
-SDL_Surface* ui_logo_surface(const Config* c, const char* rom, const char* code, bool* pixelArt, int* sub) {
+SDL_Surface* ui_logo_surface(const Config* c, const char* rom, const char* code, uint32_t crc, bool* pixelArt,
+                             int* sub) {
 	char path[1200];
 	int one;
 	if (!sub) sub = &one;
 	*sub = 1;
 	scrapedProvisional = false;
-	if (ui_logo_source(c, rom, code, path, sizeof(path)) != LOGO_EXTRACTED) {
+	if (ui_logo_source(c, rom, code, crc, path, sizeof(path)) != LOGO_EXTRACTED) {
 		/* the player's own or a scraped logo, as tall as the extracted one (GEN-11) */
-		SDL_Surface* s = sized_surface(c, rom, path, code, sub);
+		SDL_Surface* s = sized_surface(c, rom, path, code, crc, sub);
 		if (s) {
 			*pixelArt = *sub == 1;
 			return s;
 		}
-		extracted_path(c, rom, code, path, sizeof(path));
+		extracted_path(c, rom, code, crc, path, sizeof(path));
 	}
 	*pixelArt = true;
-	return image_load(path);
+	SDL_Surface* s = image_load(path);
+	if (!s && logo_mod(code, crc)) {
+		/* a known mod's own not made yet: the release's meanwhile (GEN-20) */
+		extracted_path(c, rom, code, 0, path, sizeof(path));
+		s = image_load(path);
+	}
+	return s;
 }
 
-bool ui_load_logo(const Config* c, const char* rom, const char* code, SDL_Texture* tex[2], int* w, int* h,
-                  bool* pixelArt) {
+bool ui_load_logo(const Config* c, const char* rom, const char* code, uint32_t crc, SDL_Texture* tex[2], int* w,
+                  int* h, bool* pixelArt) {
 	char path[1200];
 	scrapedProvisional = false;
 	snprintf(path, sizeof(path), "%s/logos", c->stateDir);
 	mkdirs(path);
 	char ext[1200];
-	extracted_path(c, rom, code, ext, sizeof(ext));
+	extracted_path(c, rom, code, crc, ext, sizeof(ext));
+	uint32_t mod = logo_mod(code, crc);
+	if (!ext[0]) { /* (its ROM's checksum is still being worked out: asked again when it's known) */
+		*pixelArt = true;
+		return false;
+	}
 	/* the player's own logo, else a scraped one: sized from the extracted
 	 * one (made if missing) */
-	if (ui_logo_source(c, rom, code, path, sizeof(path)) != LOGO_EXTRACTED) {
+	if (ui_logo_source(c, rom, code, crc, path, sizeof(path)) != LOGO_EXTRACTED) {
 		int sub = 1;
-		SDL_Surface* s = sized_surface(c, rom, path, code, &sub);
+		SDL_Surface* s = sized_surface(c, rom, path, code, crc, &sub);
 		if (s) {
-			if (scrapedProvisional && rom) logo_request(rom, code, ext);
+			if (scrapedProvisional && rom) logo_request(rom, code, mod, ext);
 			*pixelArt = sub == 1;
 			return textures_from(s, tex, w, h, sub > 1);
 		}
@@ -2734,8 +3504,11 @@ bool ui_load_logo(const Config* c, const char* rom, const char* code, SDL_Textur
 	/* otherwise the one extracted from the game's own title screen */
 	*pixelArt = true;
 	if (ui_load_image(ext, tex, w, h, false)) return true;
-	if (rom) logo_request(rom, code, ext);
-	return false;
+	if (rom) logo_request(rom, code, mod, ext);
+	if (!mod) return false;
+	/* a known mod's own not made yet: the release's meanwhile (GEN-20) */
+	extracted_path(c, rom, code, 0, ext, sizeof(ext));
+	return ui_load_image(ext, tex, w, h, false);
 }
 
 void ui_screenshot(const char* path) {
@@ -2746,6 +3519,10 @@ void ui_screenshot(const char* path) {
 	int w, h;
 	SDL_GetRendererOutputSize(v->ren, &w, &h);
 	SDL_Surface* s = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!s) {
+		fprintf(stderr, "screenshot failed: %s\n", SDL_GetError());
+		return;
+	}
 	if (SDL_RenderReadPixels(v->ren, NULL, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch) == 0) {
 #ifdef __APPLE__
 		/* (what the window shows: opaque, as macos_renderer_opaque makes it) */
@@ -2780,7 +3557,7 @@ bool ui_screenshot_stacked(const char* pngPath) {
 		SDL_Rect r = screens[i].rect;
 		/* ABGR8888 is R, G, B, A in memory: what the PNG writer wants */
 		unsigned char* dst = img + (size_t) y * W * 4 + (size_t) (W - r.w) / 2 * 4;
-#ifdef __ANDROID__
+#if UI_RETAINED
 		if (views[screens[i].view].retained) {
 			/* drawn now (otherwise at ui_present), read back while it's drawn */
 			swReadDst = dst, swReadRect = r, swReadPitch = W * 4, swReadOk = false;
@@ -2885,6 +3662,38 @@ void ui_fill_round(int screen, SDL_Rect r, SDL_Color c, int radius) {
 	SDL_Rect dst[4] = { { ox, oy, radius, radius }, { ox + r.w - radius, oy, radius, radius },
 		                { ox, oy + r.h - radius, radius, radius }, { ox + r.w - radius, oy + r.h - radius, radius, radius } };
 	for (int i = 0; i < 4; ++i) SDL_RenderCopy(views[s->view].ren, t, &src[i], &dst[i]);
+}
+
+/* The top r.h rows of a rounded rectangle whose corners have the full radius
+ * even where r.h is less than twice it (ui_fill_round would shrink the radius
+ * to fit: a short strip's corners came out nearly square). The bottom is
+ * left square, for a strip that is laid over a body drawn rounded already. */
+static void fill_round_top(int screen, SDL_Rect r, SDL_Color c, int radius) {
+	RECORD(screen, OP_ROUND_TOP) {
+		o->r = r, o->col = c, o->a = radius;
+		return;
+	}
+	radius = SDL_min(radius, r.w / 2);
+	if (radius <= 0 || r.h <= 0) {
+		ui_fill(screen, r, c);
+		return;
+	}
+	int zone = SDL_min(r.h, radius); /* the rows that have a corner in them */
+	ui_fill(screen, (SDL_Rect) { r.x + radius, r.y, r.w - 2 * radius, r.h }, c);
+	if (r.h > radius) {
+		ui_fill(screen, (SDL_Rect) { r.x, r.y + radius, radius, r.h - radius }, c);
+		ui_fill(screen, (SDL_Rect) { r.x + r.w - radius, r.y + radius, radius, r.h - radius }, c);
+	}
+	Screen* s = &screens[screen];
+	SDL_Texture* t = disc_texture(s->view);
+	if (!t) return;
+	SDL_SetTextureColorMod(t, c.r, c.g, c.b);
+	SDL_SetTextureAlphaMod(t, c.a);
+	int h = DISC / 2, sh = SDL_max(1, h * zone / radius);
+	SDL_Rect src[2] = { { 0, 0, h, sh }, { h, 0, h, sh } };
+	int ox = s->rect.x + r.x, oy = s->rect.y + r.y;
+	SDL_Rect dst[2] = { { ox, oy, radius, zone }, { ox + r.w - radius, oy, radius, zone } };
+	for (int i = 0; i < 2; ++i) SDL_RenderCopy(views[s->view].ren, t, &src[i], &dst[i]);
 }
 
 
@@ -3076,7 +3885,9 @@ void ui_key(int screen, SDL_Rect r, int radius, int state) {
 	int bh = r.h - (in + 1) * 2, bx = r.x + in + 1, by = r.y + in + 1, bw = r.w - (in + 1) * 2;
 	for (int i = 1; i <= 6; ++i) {
 		SDL_Color m = { (lo.r * (6 - i) + hi.r * i) / 6, (lo.g * (6 - i) + hi.g * i) / 6, (lo.b * (6 - i) + hi.b * i) / 6, 255 };
-		ui_fill_round(screen, (SDL_Rect) { bx, by, bw, bh * (7 - i) * 11 / 100 + 1 }, m, SDL_max(1, radius - in - 1));
+		SDL_Rect band = { bx, by, bw, bh * (7 - i) * 11 / 100 + 1 };
+		/* (a short band keeps the body's corner radius: ui_fill_round would shrink it to fit the band's height, and its corners came out nearly square over the rounded body, plain on a lit key) */
+		fill_round_top(screen, band, m, SDL_max(1, radius - in - 1));
 	}
 	inKey = false;
 	key_add(screen, r, state == KEY_PLAIN);
@@ -3197,6 +4008,14 @@ static void font_text_raw(int screen, int font, int x, int cy, int capPx, const 
 
 void ui_font_text(int screen, int font, int x, int cy, int capPx, const char* text, SDL_Color c, int align) {
 	font_text_raw(screen, font, x, cy, capPx, tr(text), c, align);
+}
+
+/* the same for text not to be translated (a language's own name, a line kept in English) */
+void ui_font_text_as_is(int screen, int font, int x, int cy, int capPx, const char* text, SDL_Color c, int align) {
+	font_text_raw(screen, font, x, cy, capPx, text, c, align);
+}
+int ui_font_width_as_is(int font, int capPx, const char* text) {
+	return text_width(font, capPx, text);
 }
 
 /* The language changed (i18n_set): the pictures and widths of the old text are

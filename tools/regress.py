@@ -30,7 +30,7 @@ Every run is deterministic: GBADS_SYNC=1 makes map captures and logo
 extraction run inline, at the same frames each time, so goldens are
 compared exactly (a case can allow a tolerance). See docs/TESTING.md.
 """
-import argparse, fnmatch, glob, html, json, os, re, shutil, subprocess, sys, tempfile, time, zipfile
+import argparse, fnmatch, glob, html, json, os, re, shutil, struct, subprocess, sys, tempfile, time, zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -87,6 +87,7 @@ class Run:
         self.log = ""
         self.error = None
         self.ra_states = None  # a "retroarch" case's stand-in state folder
+        self.driver = None  # a "driver" case's (ok, what): the module alone against the app
 
     def screen(self, shot, name):
         img = self.shots[shot]
@@ -157,6 +158,20 @@ def release_name(code):
     return n[:keep]
 
 
+def header_name(romzip, code):
+    """A game the dumps don't list: its patches folder as paths.c patch_folder names it, from
+    the ROM header's title: "TITLE (CODE)" (the GBA DS widescreen test ROM's "GBADS WIDE (ZWSE)")."""
+    try:
+        with zipfile.ZipFile(romzip) as z:
+            gba = [i for i in z.infolist() if i.filename.lower().endswith(".gba")]
+            head = z.read(gba[0])[0xA0:0xAC] if gba else b""
+    except (OSError, zipfile.BadZipFile):
+        return None
+    title = head.split(b"\0")[0].decode("latin-1").rstrip(" ")
+    name = "%s (%s)" % (title or "GBA", code)
+    return re.sub(r'[:/\\*?"<>|]', "_", name)
+
+
 def patches_on(case):
     """A case's "patch_on": one file name or a list, in the order applied."""
     on = case.get("patch_on") or []
@@ -174,11 +189,34 @@ def run_app(case, args, workdir):
         return r
     statedir = os.path.join(workdir, "state")
     os.makedirs(statedir)
+    # "state_files" {a name in the state folder: a fixture under states/, or "text:..." for its content}:
+    # what an earlier play left there (the auto state and its ".colours" note, GB-6: the resume logic)
+    for name, spec in case.get("state_files", {}).items():
+        dst = os.path.join(statedir, name)
+        if spec.startswith("text:"):
+            with open(dst, "w") as f:
+                f.write(spec[5:])
+        else:
+            src = os.path.join(args.fixtures, "states", spec)
+            if not os.path.exists(src):
+                r.error = "missing state fixture states/%s" % spec
+                return r
+            shutil.copy(src, dst)  # (a copy: GBA DS saves over it on leaving)
     # the ROM in a folder of the case's own: the game writes its battery save
     # beside it, so nothing lands in the fixtures and every run starts clean
     romdir = os.path.join(workdir, "rom")
     os.makedirs(romdir)
     os.symlink(rom, os.path.join(romdir, case["rom"] + ".zip"))
+    # "rom_files" {a file name in the game list's folder: a ROM fixture's name}: other ROMs listed beside it
+    for name, other in case.get("rom_files", {}).items():
+        src = os.path.join(args.fixtures, "roms", other + ".zip")
+        if not os.path.exists(src):
+            r.error = "missing ROM fixture roms/%s.zip" % other
+            return r
+        r.error = dump_error(dict(case, rom=other), src)
+        if r.error:
+            return r
+        os.symlink(src, os.path.join(romdir, name))
     if case.get("patch"):  # a patch file beside the ROM (GEN-9), from the fixtures' patches/
         pf = os.path.join(args.fixtures, "patches", case["patch"])
         if not os.path.exists(pf):
@@ -190,7 +228,7 @@ def run_app(case, args, workdir):
     # a list: the ones on, in the order they're applied)
     patchdir = os.path.join(workdir, "patches")
     if case.get("patch_folder") or case.get("patch_on") or "patch_separate" in case:
-        name = release_name(case["rom"][:4])
+        name = release_name(case["rom"][:4]) or header_name(rom, case["rom"][:4])
         if not name:
             r.error = "no release name for %s (src/dumps_data.h)" % case["rom"][:4]
             return r
@@ -257,6 +295,32 @@ def run_app(case, args, workdir):
             os.utime(dst, (t, t))
         r.ra_states = sd
         extra += ["--retroarch_cfg=" + cfgfile, "--state_folder=retroarch"]
+    # GEN-15: "bios": a fixture under bios/, put as <asset_dir>/bios/gba_bios.bin
+    # (the player's own GBA BIOS; the case's "config" {"gba_bios": 1} switches it on)
+    if case.get("bios"):
+        src = os.path.join(args.fixtures, "bios", case["bios"])
+        if not os.path.exists(src):
+            r.error = "missing bios fixture bios/%s" % case["bios"]
+            return r
+        ad = os.path.join(workdir, "assets")
+        os.makedirs(os.path.join(ad, "bios"), exist_ok=True)
+        os.symlink(src, os.path.join(ad, "bios", "gba_bios.bin"))
+        if "--asset_dir=" + ad not in extra:
+            extra.append("--asset_dir=" + ad)
+    # GEN-17: "cheat_files" {name there: fixture under cheats/}, put in
+    # <asset_dir>/cheats/ (a file is matched to its ROM by name, and the case's
+    # ROM is named by its code: "BFZE (USA) (Code Breaker).cht")
+    if case.get("cheat_files"):
+        ad = os.path.join(workdir, "assets")
+        os.makedirs(os.path.join(ad, "cheats"), exist_ok=True)
+        for name, f in case["cheat_files"].items():
+            src = os.path.join(args.fixtures, "cheats", f)
+            if not os.path.exists(src):
+                r.error = "missing cheat fixture cheats/%s" % f
+                return r
+            shutil.copy(src, os.path.join(ad, "cheats", name))
+        if "--asset_dir=" + ad not in extra:
+            extra.append("--asset_dir=" + ad)
     if case.get("save"):
         sav = os.path.join(args.fixtures, "saves", case["save"])
         if not os.path.exists(sav):
@@ -309,11 +373,26 @@ def run_app(case, args, workdir):
                # time zone, so a game that draws its clock (Boktai's, BT-8) read 12:00 on
                # a session's container (New York) and 17:00 on GitHub's UTC runners: the
                # zone is pinned (POSIX "EST5": five hours behind, no DST, no tzdata needed)
-               TZ="EST5")
+               TZ="EST5",
+               # the first-run language question (issue #92, GEN-18) is never asked unless a case
+               # asks for it (a release version's build would ask it in every fresh state folder)
+               GBADS_LANG_ASK="0")
     if not args.paced:
         # (as fast as it goes, drawing only the frames a screenshot or a
         # touch needs: the same pictures, in under half the time)
         env.update(GBADS_NOPACE="1", GBADS_DRAW_SHOTS_ONLY="1")
+    # WS-6: the widescreen patches' list and files from the repo's own widescreen/ folder, served
+    # here, for a case with "widescreen_list": true; for every other case an address nothing
+    # answers, so no case reaches GitHub (its list would change what a Patches menu shows)
+    env["GBADS_WIDE_URL"] = widescreen_server() if case.get("widescreen_list") else "http://127.0.0.1:9/"
+    env.update({k: str(v) for k, v in case.get("env", {}).items()})  # (a case's own: GBADS_TOGGLE_WAIT...)
+    # "driver": true (or --driver): the app traces its calls into the second-screen module, and
+    # tools/second_driver.c replays them with the module alone (discussion #75): see driver_check
+    driver = (case.get("driver") or args.driver) and case.get("kind") != "library"
+    tracedir = os.path.join(workdir, "trace")
+    if driver:
+        os.makedirs(tracedir)
+        env["GBADS_MODULE_TRACE"] = tracedir
     try:
         p = subprocess.run(cmd, env=env, capture_output=True, text=True, errors="replace", timeout=args.timeout)
         r.log = p.stdout + p.stderr
@@ -328,7 +407,54 @@ def run_app(case, args, workdir):
                 name, p.returncode, ": " + " / ".join(tail) if tail else "")
             return r
         r.shots[name] = Image.open(path).convert("RGB")
+    if driver:
+        env.pop("GBADS_MODULE_TRACE", None)
+        sav = os.path.join(args.fixtures, "saves", case["save"]) if case.get("save") else None
+        r.driver = driver_check(args, rom, tracedir, os.path.join(workdir, "driver"), env, sav)
     return r
+
+
+def driver_check(args, rom, tracedir, outdir, env, save=None):
+    """The module alone against the app: second-driver replays the app's trace; its own trace and
+    every picture it writes (NAME.second: what the second screen shows, NAME.game: the game's
+    picture) must be the app's, byte for byte. (ok, what)"""
+    if not os.path.exists(args.driver_bin):
+        return False, "no %s (make tools)" % os.path.relpath(args.driver_bin, ROOT)
+    try:
+        p = subprocess.run([args.driver_bin, rom, tracedir, outdir] + ([save] if save else []), env=env, capture_output=True, text=True,
+                           errors="replace", timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        return False, "second-driver timed out"
+    if p.returncode != 0:
+        tail = [l for l in (p.stdout + p.stderr).strip().splitlines() if l.strip()][-2:]
+        return False, "second-driver failed: " + " / ".join(tail)
+    names = sorted(n for n in os.listdir(tracedir) if n.endswith((".second", ".game")))
+    if not names:
+        return False, "the app's trace has no screenshots"
+    kinds = ["off", "fight", "HUD", "map", "logo"]
+    for n in ["trace.txt"] + names:
+        a, b = os.path.join(tracedir, n), os.path.join(outdir, n)
+        if not os.path.exists(b):
+            return False, "second-driver wrote no %s" % n
+        da, db = open(a, "rb").read(), open(b, "rb").read()
+        if da == db:
+            continue
+        if n == "trace.txt":
+            la, lb = da.decode(errors="replace").splitlines(), db.decode(errors="replace").splitlines()
+            i = next((i for i in range(min(len(la), len(lb))) if la[i] != lb[i]), min(len(la), len(lb)))
+            return False, "the traces part at line %d: app %r, driver %r" % (
+                i + 1, la[i] if i < len(la) else "(end)", lb[i] if i < len(lb) else "(end)")
+        if n.endswith(".second"):
+            ha, hb = struct.unpack("<4i", da[:16]), struct.unpack("<4i", db[:16])
+            if ha != hb:
+                desc = lambda h: "%s%s %dx%d" % (kinds[h[0]] if 0 <= h[0] < 5 else h[0], ", dimmed" if h[1] else "", h[2], h[3])
+                return False, "%s: the app shows %s, the driver %s" % (n, desc(ha), desc(hb))
+            off = 16
+        else:
+            off = 8
+        diff = sum(1 for i in range(off, min(len(da), len(db)), 4) if da[i:i + 4] != db[i:i + 4])
+        return False, "%s: %d pixels differ" % (n, diff)
+    return True, "%d pictures and the trace (%d lines) match" % (len(names), open(os.path.join(tracedir, "trace.txt")).read().count("\n"))
 
 
 def run_logo(case, args, workdir):
@@ -357,6 +483,31 @@ def run_logo(case, args, workdir):
     return r
 
 
+_wideServer = None
+_wideLock = __import__("threading").Lock()
+
+
+def widescreen_server():
+    """http://127.0.0.1:PORT/ serving the repo's widescreen/ folder (started once)."""
+    global _wideServer
+    with _wideLock:
+        return _widescreen_server()
+
+
+def _widescreen_server():
+    global _wideServer
+    if _wideServer is None:
+        import functools, http.server, threading
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+        handler = functools.partial(Quiet, directory=os.path.join(ROOT, "widescreen"))
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        _wideServer = "http://127.0.0.1:%d/" % srv.server_address[1]
+    return _wideServer
+
+
 # ------------------------------------------------------------------ checks
 
 def check(run, chk):
@@ -375,6 +526,12 @@ def check(run, chk):
         with open(path, "rb") as f:
             head = f.read(max(len(want), 8))
         return head.startswith(want), "%s starts %r" % (chk["path"], head)
+    if t == "image_size":  # a picture the app saved (a BMP or PNG: the resume picture, GB-13) has this size
+        path = os.path.join(run.ra_states or run.dir, chk["path"])
+        if not os.path.exists(path):
+            return False, "no %s" % chk["path"]
+        size = Image.open(path).size
+        return list(size) == list(chk["size"]), "%s is %dx%d (need %dx%d)" % (chk["path"], size[0], size[1], chk["size"][0], chk["size"][1])
     if t == "no_log":
         m = re.search(chk["match"], run.log, re.M)
         return m is None, "log has %r" % m.group(0) if m else "log lacks /%s/" % chk["match"]
@@ -433,11 +590,15 @@ def compare_golden(run, args, shot):
     have = run.shots[shot]
     if want.size != have.size:
         return False, "size %s, golden %s" % (have.size, want.size)
-    if case.get("golden_mask"):  # rects [x0, y0, x1, y1] left out (the app's version number...)
+    # rects [x0, y0, x1, y1] left out (the app's version number...); a fifth item, a shot's name
+    # (or a list of them), keeps the rect to those shots
+    masks = [b for b in case.get("golden_mask", [])
+             if len(b) == 4 or shot in ([b[4]] if isinstance(b[4], str) else b[4])]
+    if masks:
         want, have = want.copy(), have.copy()
-        for box in case["golden_mask"]:
+        for box in masks:
             for im in (want, have):
-                im.paste((0,) * len(im.getbands()), tuple(box))
+                im.paste((0,) * len(im.getbands()), tuple(box[:4]))
     diff = ImageChops.difference(have, want)
     tol = case.get("golden_tol", 0)
     n = sum(1 for p in pixels(diff) if max(p) > tol)
@@ -456,6 +617,8 @@ def evaluate(case, args):
     run = run_logo(case, args, workdir) if case.get("kind") == "logo" else run_app(case, args, workdir)
     res = {"case": case, "dir": workdir, "secs": 0, "checks": [], "goldens": [], "error": run.error}
     if not run.error:
+        if run.driver:
+            res["checks"].append(("MODULE", "the module alone (second-driver) matches the app", run.driver[0], run.driver[1]))
         for chk in case.get("checks", []):
             try:
                 ok, what = check(run, chk)
@@ -525,12 +688,38 @@ figure{display:inline-block;margin:4px}small{font-weight:normal;color:#666}</sty
     open(os.path.join(outdir, "index.html"), "w").write(page)
 
 
+def toggle_lint(cases):
+    """GEN-14: a case that turns the toggle on needs its game's rules file to say what the toggle does
+    (a Toggle row that isn't `none`), and every Toggle row says `pages`, `views` or `none`."""
+    bad, seen = [], {}
+    for c in cases:
+        slug = c["slug"]
+        if slug not in seen:
+            f = os.path.join(ROOT, "docs", "games", slug + ".md")
+            row = None
+            if os.path.exists(f):
+                for line in open(f, encoding="utf-8"):
+                    if line.startswith("| Toggle |"):
+                        row = line.split("|")[2].strip()
+                        break
+            seen[slug] = row
+            if row is not None and not row.lstrip("`").startswith(("pages", "views", "none")):
+                bad.append("%s.md: the Toggle row starts with `pages`, `views` or `none`, not %r" % (slug, row[:30]))
+        row = seen[slug]
+        if (c.get("config") or {}).get("toggle") == "1" and (row is None or row.lstrip("`").startswith("none")):
+            bad.append("%s: turns the toggle on, but %s.md has no Toggle row saying what it does" % (c["id"], slug))
+    return sorted(set(bad))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("only", nargs="*", help="game slugs, case ids or globs")
     ap.add_argument("--fixtures", default=os.environ.get("GBADS_TESTS", os.path.join(os.path.dirname(ROOT), "gba-ds-tests")))
     ap.add_argument("--bin", default=os.path.join(ROOT, "build", "host", "gba-ds"))
     ap.add_argument("--harness", default=os.path.join(ROOT, "build", "host", "harness"))
+    ap.add_argument("--driver", action="store_true",
+                    help="every case also checks the module alone against the app (as \"driver\": true cases do)")
+    ap.add_argument("--driver-bin", default=os.path.join(ROOT, "build", "host", "second-driver"))
     ap.add_argument("--report", default=os.path.join(ROOT, "build", "regress"))
     ap.add_argument("--update", action="store_true", help="save the current pictures as the goldens")
     ap.add_argument("--list", action="store_true")
@@ -571,6 +760,12 @@ def main():
                 return
             args.only = (args.only or []) + slugs
     cases = load_cases(args.only)
+    bad = toggle_lint(cases)
+    if bad:
+        print("Toggle lint (GEN-14):")
+        for b in bad:
+            print("  " + b)
+        sys.exit(1)
     if args.shard:
         i, n = (int(v) for v in args.shard.split("/"))
         # (dealt round-robin by game then case, so each share gets a mix of slow and quick games)
@@ -636,6 +831,8 @@ def main():
         need = set()
         for c in cases:
             need.add("roms/%s.zip" % c["rom"])
+            for other in c.get("rom_files", {}).values():
+                need.add("roms/%s.zip" % other)
             need.add("golden/%s/%s/" % (c["slug"], c["id"]))
             if c.get("state"):
                 need.add("states/" + c["state"])
@@ -650,6 +847,13 @@ def main():
                     need.add("states/" + keys[5:])
             for fx in c.get("retroarch", {}).get("states", {}).values():  # (GEN-13's stand-in RetroArch folder)
                 need.add("states/" + fx)
+            if c.get("bios"):  # (GEN-15's player-supplied GBA BIOS)
+                need.add("bios/" + c["bios"])
+            for f in c.get("cheat_files", {}).values():  # (GEN-17's cheat files)
+                need.add("cheats/" + f)
+            for f in c.get("state_files", {}).values():  # (an earlier play's auto state: GB-6's resume note)
+                if not f.startswith("text:"):
+                    need.add("states/" + f)
         print("\n".join(sorted(need)))
         return
     if args.list:

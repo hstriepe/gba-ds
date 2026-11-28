@@ -20,7 +20,7 @@ struct MapCapture {
 	size_t cropPixels;
 	int cx, cy, cw, ch; /* active crop */
 	bool tight;
-	bool clean; /* map_crop: also erase button-prompt lettering (profile glyphs) */
+	bool clean; /* mapcap_create's tight: also tidy the picture (the profile's under rectangles, glyphs, recolouring and tab) */
 	int failures; /* consecutive failed captures (guarded by lock) */
 	/* profile.rate: the label copied from the pause screen (worker thread only) */
 	uint32_t rateBuf[256 * 16];
@@ -39,6 +39,7 @@ struct MapCapture {
 	bool underValid;
 	int workFrames;
 	int workStep;     /* emulated frames between work[] frames */
+	bool workPages;   /* work[] are pages (MapProfile.pages), not blinking frames */
 	volatile bool still; /* "Map Animations: Off": record the whole loop (animCycle) */
 
 	/* async machinery */
@@ -55,6 +56,7 @@ struct MapCapture {
 	uint32_t* published[MAP_MAX_FRAMES];
 	int pubFrames;
 	int pubStep;
+	bool pubPages;
 	uint32_t serial;
 	const char* lastError;
 #ifdef __wasi__
@@ -116,16 +118,20 @@ static bool screen_matches(const MapProfile* p, const uint32_t* fb) {
 
 uint32_t (*memprobe_virtual)(Emu* e, uint32_t addr);
 
+/* a probe's value: its byte, halfword or word, or a profile's virtual address (0xF...) */
+static uint32_t memprobe_read(Emu* e, const MemProbe* m) {
+	if (m->addr >= 0xF0000000u) return memprobe_virtual ? memprobe_virtual(e, m->addr) : 0;
+	switch (m->size) {
+	case 2: return emu_read16(e, m->addr);
+	case 4: return emu_read32(e, m->addr);
+	default: return emu_read8(e, m->addr);
+	}
+}
+
 bool memprobes_match(const MemProbe* list, int n, Emu* e) {
 	for (int i = 0; i < n && list[i].addr; ++i) {
 		const MemProbe* m = &list[i];
-		uint32_t v;
-		if (m->addr >= 0xF0000000u) v = memprobe_virtual ? memprobe_virtual(e, m->addr) : 0;
-		else switch (m->size) {
-		case 2: v = emu_read16(e, m->addr); break;
-		case 4: v = emu_read32(e, m->addr); break;
-		default: v = emu_read8(e, m->addr); break;
-		}
+		uint32_t v = memprobe_read(e, m);
 		uint32_t mask = m->mask ? m->mask : 0xFFFFFFFF;
 		if (m->range ? (v & mask) < m->value || (v & mask) > m->alt
 		             : (v & mask) != (m->value & mask) && !(m->hasAlt && (v & mask) == (m->alt & mask))) {
@@ -214,9 +220,6 @@ static void remove_arrows(MapCapture* mc, uint32_t* out) {
 	}
 }
 
-/* Erases button-prompt letters (profile glyphs): pixels of the letter's colours
- * are replaced, outside in, by the most common colour among their already-clean
- * 8 neighbours, so the letter takes on the button face around it. */
 #define IMAX(a, b) ((a) > (b) ? (a) : (b))
 #define IMIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -269,6 +272,10 @@ static bool is_key(const uint32_t* keys, int nk, uint32_t c) {
 	return false;
 }
 
+/* Erases button-prompt letters (profile glyphs): pixels of the letter's colours
+ * are replaced, outside in, by the most common colour among their already-clean
+ * 8 neighbours, so the letter takes on the button face around it (or, as the
+ * glyph says: the grid rebuilt, a flat plate's colour, or one colour over all). */
 static void remove_glyphs(MapCapture* mc, uint32_t* out) {
 	const MapProfile* p = mc->prof;
 	for (int g = 0; g < 10 && p->glyphs[g].w; ++g) {
@@ -279,7 +286,6 @@ static void remove_glyphs(MapCapture* mc, uint32_t* out) {
 			uint32_t rgb = p->glyphs[g].rgb[i];
 			keys[i] = ((rgb >> 16) & 0xFF) | (rgb & 0xFF00) | ((rgb & 0xFF) << 16);
 		}
-#define IS_KEY(c) is_key(keys, nk, c)
 		int x0 = IMAX(p->glyphs[g].x, mc->cx), x1 = IMIN(p->glyphs[g].x + p->glyphs[g].w, mc->cx + mc->cw);
 		int y0 = IMAX(p->glyphs[g].y, mc->cy), y1 = IMIN(p->glyphs[g].y + p->glyphs[g].h, mc->cy + mc->ch);
 		if (x0 >= x1 || y0 >= y1) continue;
@@ -303,7 +309,7 @@ static void remove_glyphs(MapCapture* mc, uint32_t* out) {
 			for (int y = y0; y < y1; ++y) {
 				for (int x = x0; x < x1; ++x) {
 					uint32_t c = out[(y - mc->cy) * mc->cw + (x - mc->cx)];
-					if (IS_KEY(c)) continue;
+					if (is_key(keys, nk, c)) continue;
 					int i = 0;
 					while (i < ncols && cols[i] != c) ++i;
 					if (i == ncols) {
@@ -321,7 +327,7 @@ static void remove_glyphs(MapCapture* mc, uint32_t* out) {
 			for (int y = y0; y < y1; ++y) {
 				for (int x = x0; x < x1; ++x) {
 					uint32_t* px = &out[(y - mc->cy) * mc->cw + (x - mc->cx)];
-					if (IS_KEY(*px)) *px = cols[best];
+					if (is_key(keys, nk, *px)) *px = cols[best];
 				}
 			}
 			continue;
@@ -332,7 +338,7 @@ static void remove_glyphs(MapCapture* mc, uint32_t* out) {
 			for (int y = y0; y < y1; ++y) {
 				for (int x = x0; x < x1; ++x) {
 					uint32_t* px = &out[(y - mc->cy) * mc->cw + (x - mc->cx)];
-					if (!IS_KEY(*px)) continue;
+					if (!is_key(keys, nk, *px)) continue;
 					uint32_t cands[8];
 					int nc = 0;
 					for (int dy = -1; dy <= 1; ++dy) {
@@ -340,7 +346,7 @@ static void remove_glyphs(MapCapture* mc, uint32_t* out) {
 							int u = x + dx - mc->cx, v = y + dy - mc->cy;
 							if ((!dx && !dy) || u < 0 || v < 0 || u >= mc->cw || v >= mc->ch) continue;
 							uint32_t c = out[v * mc->cw + u];
-							if (!IS_KEY(c)) cands[nc++] = c;
+							if (!is_key(keys, nk, c)) cands[nc++] = c;
 						}
 					}
 					if (nc < 2) continue; /* deep inside the letter: wait for the next pass */
@@ -406,7 +412,7 @@ static void paint_tab(MapCapture* mc, uint32_t* out) {
 
 static void patch_under(MapCapture* mc, uint32_t* out) {
 	const MapProfile* p = mc->prof;
-	for (int r = 0; r < 2 && p->underRect[r].x1; ++r) {
+	for (int r = 0; r < 3 && p->underRect[r].x1; ++r) {
 		int x0 = IMAX(p->underRect[r].x0, mc->cx), x1 = IMIN(p->underRect[r].x1, mc->cx + mc->cw - 1);
 		int y0 = IMAX(p->underRect[r].y0, mc->cy), y1 = IMIN(p->underRect[r].y1, mc->cy + mc->ch - 1);
 		for (int y = y0; y <= y1; ++y) {
@@ -475,8 +481,6 @@ static bool map_up(const MapProfile* p, Emu* s) {
 	return memprobes_match(p->mem, 4, s) && screen_matches(p, s->fb);
 }
 
-/* Runs the shadow core from `state`; returns NULL on success or a reason.
- * Fills mc->work[0..workFrames). */
 static bool grab_rate(MapCapture* mc, const void* state);
 
 /* Summed brightness of a frame (fast, for comparing fade levels). */
@@ -502,24 +506,29 @@ static const char* do_capture(MapCapture* mc, const void* state) {
 	                 mc->cancel ? ", called off" : err ? ": " : "", mc->cancel ? "" : err ? err : "");
 	return err;
 }
+/* Runs the shadow core from `state`; returns NULL on success or a reason.
+ * Fills mc->work[0..workFrames). */
 static const char* do_capture_(MapCapture* mc, const void* state) {
 	const MapProfile* p = mc->prof;
 	Emu* s = &mc->shadow;
 	size_t n = mc->cropPixels;
 	mc->workFrames = 0;
+	mc->workPages = false;
 	mc->tileValid = false;
 	mc->underValid = false;
 	if (p->composePages) {
-		int n = MAP_MAX_FRAMES, step = 1;
-		const char* err = p->composePages(s, state, mc->work, &n, &step, mc->cw, mc->ch);
-		mc->workFrames = err ? 0 : n < 1 ? 1 : n > MAP_MAX_FRAMES ? MAP_MAX_FRAMES : n;
+		int nf = MAP_MAX_FRAMES, step = 1;
+		const char* err = p->composePages(s, state, mc->work, &nf, &step, mc->cw, mc->ch);
+		mc->workFrames = err ? 0 : nf < 1 ? 1 : nf > MAP_MAX_FRAMES ? MAP_MAX_FRAMES : nf;
 		mc->workStep = step < 1 ? 1 : step;
+		mc->workPages = (p->pages || p->views) && mc->workFrames > 1;
 		return err;
 	}
 	if (p->compose) {
 		const char* err = p->compose(s, state, mc->work[0], mc->cw, mc->ch);
 		mc->workFrames = err ? 0 : 1;
 		mc->workStep = 1;
+		mc->workPages = false;
 		return err;
 	}
 	if (!emu_state_load(s, state)) {
@@ -532,6 +541,7 @@ static const char* do_capture_(MapCapture* mc, const void* state) {
 	if (map_up(p, s)) {
 		return "screen already looks like the map";
 	}
+	if (p->openPoke.addr) emu_write8(s, p->openPoke.addr, p->openPoke.value);
 	/* (openAlt: the game's other way to the map, from where it's asked for) */
 	const MacroStep* open = p->openAlt[0].frames && memprobes_match(p->openAltIf, 2, s) ? p->openAlt : p->open;
 	for (int i = 0; i < 8 && open[i].frames; ++i) {
@@ -601,6 +611,7 @@ static const char* do_capture_(MapCapture* mc, const void* state) {
 		step = (p->animCycle + want - 1) / want;
 	}
 	mc->workStep = step;
+	mc->workPages = false; /* (blinking markers) */
 	bool animated = false;
 	for (int i = 1; i < want; ++i) {
 		for (int k = 0; k < step; ++k) {
@@ -771,6 +782,7 @@ static void publish(MapCapture* mc, const char* err) {
 	}
 	mc->pubFrames = mc->workFrames;
 	mc->pubStep = mc->workStep;
+	mc->pubPages = mc->workPages;
 	++mc->serial;
 }
 
@@ -780,12 +792,15 @@ MapCapture* mapcap_create(const char* romPath, const char* gameCode, bool tight)
 		return NULL;
 	}
 	MapCapture* mc = calloc(1, sizeof(*mc));
+	if (!mc) return NULL;
 	mc->prof = p;
 	memprobe_virtual = p->virt;
 	if (!emu_open(&mc->shadow, romPath, NULL, false)) {
 		free(mc);
 		return NULL;
 	}
+	pthread_mutex_init(&mc->lock, NULL);
+	pthread_cond_init(&mc->cond, NULL);
 	mc->shadow.cancel = &mc->cancel;
 	mc->stateSize = emu_state_size(&mc->shadow);
 	mc->snapshot = malloc(mc->stateSize);
@@ -818,23 +833,26 @@ MapCapture* mapcap_create(const char* romPath, const char* gameCode, bool tight)
 		mc->underState = malloc(mc->stateSize);
 	}
 	mc->rateRef = calloc(mc->cropPixels, sizeof(uint32_t));
+	bool ok = mc->snapshot && mc->prev && mc->rateRef;
+	for (int i = 0; i < MAP_MAX_FRAMES; ++i) ok &= mc->work[i] && mc->published[i];
+	if (mc->clean && p->underRect[0].x1) ok &= mc->under && mc->underState;
+	if (!ok) {
+		mapcap_destroy(mc);
+		return NULL;
+	}
 #ifdef __wasi__
 	snprintf(webRom, sizeof(webRom), "%s", romPath);
 	snprintf(webCode, sizeof(webCode), "%s", gameCode);
 	webTight = tight;
 #endif
-	pthread_mutex_init(&mc->lock, NULL);
-	pthread_cond_init(&mc->cond, NULL);
 	return mc;
 }
 
-/* GBADS_SYNC=1 (regression tests): captures run in mapcap_request, the
- * game waiting for them, as in the web build, so every run gives the same
- * pictures at the same frames. */
+/* emu_sync_work (the regression tests' GBADS_SYNC=1, a core's choice):
+ * captures run in mapcap_request, the game waiting for them, as in the web
+ * build, so every run gives the same pictures at the same frames. */
 static void start_thread(MapCapture* mc) {
-	static int sync = -1;
-	if (sync < 0) sync = getenv("GBADS_SYNC") && atoi(getenv("GBADS_SYNC"));
-	if (sync) mc->noThread = true;
+	if (emu_sync_work()) mc->noThread = true;
 	if (!mc->running && !mc->noThread) {
 		mc->running = true;
 		if (pthread_create(&mc->thread, NULL, worker, mc) != 0) mc->running = false, mc->noThread = true;
@@ -893,6 +911,7 @@ MapResult mapcap_capture_sync(MapCapture* mc, Emu* live) {
 	r.h = mc->ch;
 	r.nFrames = mc->workFrames;
 	r.frameStep = mc->workStep;
+	r.pages = mc->workPages;
 	for (int i = 0; i < MAP_MAX_FRAMES; ++i) {
 		r.frames[i] = mc->work[i];
 	}
@@ -957,6 +976,7 @@ __attribute__((export_name("web_capture_deliver"))) void web_capture_deliver(uin
 	for (int i = 0; i < frames; ++i) memcpy(mc->work[i], px + n * i, n * sizeof(uint32_t));
 	mc->workFrames = frames;
 	mc->workStep = step < 1 ? 1 : step;
+	mc->workPages = mc->prof && (mc->prof->pages || mc->prof->views) && frames > 1;
 	mc->tileValid = tileValid && !failed;
 	if (mc->tileValid) memcpy(mc->tile, px + n * frames, sizeof(mc->tile));
 	const char* err = NULL;
@@ -1028,6 +1048,10 @@ int mapcap_web_serve(const char* romPath, const char* code, bool tight) {
 	}
 }
 #endif
+
+static volatile int altViewWanted;
+void mapcap_set_alt(int on) { altViewWanted = on; }
+int mapcap_alt_view(void) { return altViewWanted; }
 
 bool mapcap_request(MapCapture* mc, Emu* live) {
 #ifdef __wasi__
@@ -1110,11 +1134,12 @@ bool mapcap_poll(MapCapture* mc, uint32_t lastSerial, MapResult* out) {
 		out->h = mc->ch;
 		out->nFrames = mc->pubFrames;
 		out->frameStep = mc->pubStep;
+		out->pages = mc->pubPages;
 		for (int i = 0; i < MAP_MAX_FRAMES; ++i) {
 			if (!out->frames[i]) {
 				out->frames[i] = malloc(n * sizeof(uint32_t));
 			}
-			if (i < mc->pubFrames) {
+			if (i < mc->pubFrames && out->frames[i]) {
 				memcpy(out->frames[i], mc->published[i], n * sizeof(uint32_t));
 			}
 		}
@@ -1146,8 +1171,7 @@ uint32_t mapcap_room_key(MapCapture* mc, Emu* live) {
 	bool any = false;
 	for (int i = 0; i < 4 && mc->prof->room[i].addr; ++i) {
 		const MemProbe* m = &mc->prof->room[i];
-		uint32_t v = m->addr >= 0xF0000000u ? (memprobe_virtual ? memprobe_virtual(live, m->addr) : 0)
-		           : m->size == 4 ? emu_read32(live, m->addr) : m->size == 2 ? emu_read16(live, m->addr) : emu_read8(live, m->addr);
+		uint32_t v = memprobe_read(live, m);
 		if (m->mask) {
 			v &= m->mask;
 		}

@@ -229,6 +229,7 @@
   },
   {
    "id": "aw-us-co-screen",
+   "driver": true,
    "rom": "AWRE",
    "state": "advance-wars/us-co-screen.ss",
    "desc": "the CO dossier open on army 2's turn in a two-player Versus game: the logo (AW-4's known limitation: a later army's turn is taken for the computer's)",
@@ -349,6 +350,7 @@
   },
   {
    "id": "aw-us-exit-map",
+   "driver": true,
    "rom": "AWRE",
    "state": "advance-wars/us-cursor-empty.ss",
    "desc": "the Battle Intel taken, then a map quit (Options > Exit Map) to the mode menu (a player's bug report)",
@@ -1241,6 +1243,33 @@
    ]
   },
   {
+   "id": "aw-us-retroarch-zstd-resume",
+   "rom": "AWRE",
+   "desc": "save states shared with RetroArch: GBA DS resumes from RetroArch's automatic state when RetroArch compresses its states with zstd (RZIP version 2, RetroArch 1.21 on): the same moment, the same picture as aw-us-retroarch-resume's (GEN-15)",
+   "rules": [
+    "GEN-15"
+   ],
+   "config": {
+    "auto_load": 1
+   },
+   "retroarch": {
+    "states": {
+     "mGBA/AWRE.state.auto": "advance-wars/us-retroarch-zstd.state"
+    }
+   },
+   "shots": {
+    "resumed": 60
+   },
+   "checks": [
+    {
+     "type": "log",
+     "match": "load state: .*AWRE\\.state\\.auto: loaded \\(RetroArch's, saved by RetroArch\\)",
+     "rule": "GEN-15",
+     "what": "resumed from a zstd-compressed automatic state"
+    }
+   ]
+  },
+  {
    "id": "aw-us-retroarch-save",
    "rom": "AWRE",
    "state": "advance-wars/us-co-screen.ss",
@@ -1266,7 +1295,7 @@
     {
      "type": "file",
      "path": "mGBA/AWRE.state.auto.png",
-     "starts": "\u0089PNG",
+     "starts": "PNG",
      "rule": "GEN-13",
      "what": "its thumbnail"
     },
@@ -1306,7 +1335,7 @@
     {
      "type": "file",
      "path": "AWRE.state.auto.png",
-     "starts": "\u0089PNG",
+     "starts": "PNG",
      "rule": "GEN-13",
      "what": "its thumbnail"
     }
@@ -1471,6 +1500,96 @@
    ]
   },
   {
+   "id": "aw-us-retroarch-bios",
+   "rom": "AWRE",
+   "state": "advance-wars/us-co-screen.ss",
+   "desc": "a state RetroArch's core saved with the GBA BIOS while the CPU was inside it (GEN-15): the pause menu's Load Slot 4 says it was saved with the GBA BIOS, not just \"Load failed\" (the clock's corner masked, it shows the real time)",
+   "rules": [
+    "GEN-15"
+   ],
+   "retroarch": {
+    "states": {
+     "mGBA/AWRE.state4": "advance-wars/us-retroarch-bios.state"
+    }
+   },
+   "shots": {
+    "refused-keys": 190
+   },
+   "checks": [
+    {
+     "type": "log",
+     "match": "load state: .*AWRE\\.state4: not loaded \\(RetroArch's",
+     "rule": "GEN-15",
+     "what": "the BIOS state is refused"
+    },
+    {
+     "type": "log",
+     "match": "load state: refused by mGBA: saved inside the GBA BIOS",
+     "rule": "GEN-15",
+     "what": "and the reason is told"
+    }
+   ],
+   "input": [
+    [
+     30,
+     "HOME"
+    ],
+    [
+     36,
+     "-"
+    ],
+    [
+     60,
+     "DOWN"
+    ],
+    [
+     66,
+     "-"
+    ],
+    [
+     72,
+     "DOWN"
+    ],
+    [
+     78,
+     "-"
+    ],
+    [
+     140,
+     "UP"
+    ],
+    [
+     146,
+     "-"
+    ],
+    [
+     152,
+     "RIGHT"
+    ],
+    [
+     158,
+     "-"
+    ],
+    [
+     164,
+     "A"
+    ],
+    [
+     170,
+     "-"
+    ]
+   ],
+   "golden_frac": 0.001,
+   "golden_mask": [
+    [
+     0,
+     0,
+     200,
+     60
+    ]
+   ]
+  },
+  {
    "id": "aw-retroarch-settings",
    "kind": "library",
    "rom": "AWRE",
@@ -1549,8 +1668,580 @@
      725,
      1010,
      750
+    ],
+    [
+     40,
+     1440,
+     800,
+     1474,
+     "system-language"
     ]
    ]
+  },
+  {
+   "id": "aw-bios-settings",
+   "kind": "library",
+   "rom": "AWRE",
+   "desc": "the game list's Settings > System, GBA BIOS row: Built-in and its note; switched on with no gba_bios.bin in the bios folder it stays Built-in and says where to put the file (the BIOS is never looked for by itself)",
+   "rules": [
+    "GEN-15"
+   ],
+   "input": [
+    [
+     30,
+     "SELECT"
+    ],
+    [
+     36,
+     "-"
+    ],
+    [
+     44,
+     "DOWN"
+    ],
+    [
+     48,
+     "-"
+    ],
+    [
+     52,
+     "DOWN"
+    ],
+    [
+     56,
+     "-"
+    ],
+    [
+     60,
+     "DOWN"
+    ],
+    [
+     64,
+     "-"
+    ],
+    [
+     70,
+     "A"
+    ],
+    [
+     74,
+     "-"
+    ],
+    [
+     78,
+     "DOWN"
+    ],
+    [
+     82,
+     "-"
+    ],
+    [
+     86,
+     "DOWN"
+    ],
+    [
+     90,
+     "-"
+    ],
+    [
+     94,
+     "DOWN"
+    ],
+    [
+     98,
+     "-"
+    ],
+    [
+     130,
+     "A"
+    ],
+    [
+     134,
+     "-"
+    ]
+   ],
+   "shots": {
+    "system-bios": 120,
+    "system-bios-missing": 150
+   },
+   "golden_mask": [
+    [
+     870,
+     725,
+     1010,
+     750
+    ]
+   ]
+  },
+  {
+   "id": "aw-bios-settings-on",
+   "kind": "library",
+   "rom": "AWRE",
+   "desc": "Settings > System, GBA BIOS with the real BIOS file in the bios folder: switched on it says so and the row reads Your Own",
+   "rules": [
+    "GEN-15"
+   ],
+   "input": [
+    [
+     30,
+     "SELECT"
+    ],
+    [
+     36,
+     "-"
+    ],
+    [
+     44,
+     "DOWN"
+    ],
+    [
+     48,
+     "-"
+    ],
+    [
+     52,
+     "DOWN"
+    ],
+    [
+     56,
+     "-"
+    ],
+    [
+     60,
+     "DOWN"
+    ],
+    [
+     64,
+     "-"
+    ],
+    [
+     70,
+     "A"
+    ],
+    [
+     74,
+     "-"
+    ],
+    [
+     78,
+     "DOWN"
+    ],
+    [
+     82,
+     "-"
+    ],
+    [
+     86,
+     "DOWN"
+    ],
+    [
+     90,
+     "-"
+    ],
+    [
+     94,
+     "DOWN"
+    ],
+    [
+     98,
+     "-"
+    ],
+    [
+     130,
+     "A"
+    ],
+    [
+     134,
+     "-"
+    ]
+   ],
+   "shots": {
+    "system-bios-on": 150
+   },
+   "golden_mask": [
+    [
+     870,
+     725,
+     1010,
+     750
+    ]
+   ],
+   "bios": "gba_bios.bin",
+   "checks": [
+    {
+     "type": "log",
+     "match": "library: GBA BIOS on",
+     "rule": "GEN-15",
+     "what": "switched on with a usable file"
+    }
+   ]
+  },
+  {
+   "id": "aw-rom-path-list",
+   "kind": "library",
+   "rom": "AWRE",
+   "desc": "Settings > System > Show ROM Path on Game List switched on: the row reads On (Font size: 1x), and back on the game list the other screen shows the ROM's path under the Play / Quit hints, on black",
+   "rules": [
+    "GEN-21"
+   ],
+   "input": [
+    [
+     30,
+     "SELECT"
+    ],
+    [
+     36,
+     "-"
+    ],
+    [
+     44,
+     "DOWN"
+    ],
+    [
+     48,
+     "-"
+    ],
+    [
+     52,
+     "DOWN"
+    ],
+    [
+     56,
+     "-"
+    ],
+    [
+     60,
+     "DOWN"
+    ],
+    [
+     64,
+     "-"
+    ],
+    [
+     70,
+     "A"
+    ],
+    [
+     74,
+     "-"
+    ],
+    [
+     78,
+     "DOWN"
+    ],
+    [
+     82,
+     "-"
+    ],
+    [
+     86,
+     "DOWN"
+    ],
+    [
+     90,
+     "-"
+    ],
+    [
+     94,
+     "DOWN"
+    ],
+    [
+     98,
+     "-"
+    ],
+    [
+     102,
+     "DOWN"
+    ],
+    [
+     106,
+     "-"
+    ],
+    [
+     130,
+     "A"
+    ],
+    [
+     134,
+     "-"
+    ],
+    [
+     160,
+     "B"
+    ],
+    [
+     164,
+     "-"
+    ],
+    [
+     172,
+     "B"
+    ],
+    [
+     176,
+     "-"
+    ]
+   ],
+   "shots": {
+    "system-rom-path-1x": 150,
+    "list-rom-path": 200
+   },
+   "golden_mask": [
+    [
+     870,
+     600,
+     1024,
+     750
+    ],
+    [
+     0,
+     600,
+     1024,
+     768
+    ]
+   ],
+   "checks": [
+    {
+     "type": "log",
+     "match": "library: ROM path on the game list on",
+     "rule": "GEN-21",
+     "what": "switched on from the System page"
+    },
+    {
+     "type": "not_uniform",
+     "shot": "list-rom-path",
+     "screen": "game",
+     "rect": [
+      24,
+      734,
+      700,
+      754
+     ],
+     "color": "000000",
+     "frac": 0.999,
+     "rule": "GEN-21",
+     "what": "the path written under the hints, on the black"
+    },
+    {
+     "type": "uniform",
+     "shot": "list-rom-path",
+     "screen": "game",
+     "rect": [
+      0,
+      755,
+      1024,
+      768
+     ],
+     "color": "000000",
+     "frac": 0.999,
+     "rule": "GEN-21",
+     "what": "no coloured strip: black below the path"
+    }
+   ]
+  },
+  {
+   "id": "aw-us-toggle-unavailable",
+   "rom": "AWRE",
+   "state": "advance-wars/us-title.ss",
+   "desc": "the in-game settings' Second screen page in a game the toggle and the pinball view don't apply to: Contextual toggle, Auto-rotate, Toggle button and Pinball two-screen view are greyed out and say Not available",
+   "rules": [
+    "GEN-14"
+   ],
+   "input": [
+    [
+     60,
+     "SWIPE:0.5,0.99,0.5,0.85"
+    ],
+    [
+     110,
+     "TAP:0.5,0.864"
+    ],
+    [
+     170,
+     "-"
+    ],
+    [
+     200,
+     "TAP:0.855,0.529"
+    ],
+    [
+     230,
+     "-"
+    ]
+   ],
+   "shots": {
+    "menu": 260
+   },
+   "golden_mask": [
+    [
+     0,
+     0,
+     140,
+     70
+    ]
+   ]
+  },
+  {
+   "id": "aw-lang-first-run",
+   "kind": "library",
+   "rom": "AWRE",
+   "desc": "a first install on a system that reports Chinese (issue #92): before the game list, the language screen in Chinese, Automatic picked; English picked, both screens redraw in English; A again keeps it and the game list opens in English",
+   "rules": [
+    "GEN-18"
+   ],
+   "env": {
+    "GBADS_LANG_ASK": "1",
+    "LANG": "zh_CN.UTF-8",
+    "LC_ALL": "",
+    "LC_MESSAGES": "",
+    "LANGUAGE": ""
+   },
+   "input": [
+    [
+     40,
+     "DOWN"
+    ],
+    [
+     44,
+     "-"
+    ],
+    [
+     50,
+     "A"
+    ],
+    [
+     54,
+     "-"
+    ],
+    [
+     80,
+     "A"
+    ],
+    [
+     84,
+     "-"
+    ]
+   ],
+   "shots": {
+    "lang-ask": 30,
+    "lang-ask-english": 70,
+    "lang-kept": 110
+   },
+   "checks": [
+    {
+     "type": "log",
+     "rule": "GEN-18",
+     "what": "asked on a first install",
+     "match": "^language: asking \\(first run\\), now auto \\(zh_CN\\)"
+    },
+    {
+     "type": "log",
+     "rule": "GEN-18",
+     "what": "English kept",
+     "match": "^language: kept en \\(en\\)"
+    }
+   ],
+   "golden_mask": [
+    [
+     870,
+     725,
+     1010,
+     750
+    ]
+   ]
+  },
+  {
+   "id": "aw-lang-first-pause",
+   "rom": "AWRE",
+   "desc": "a first install launched straight into a game (issue #92): the game starts at once; the first pause asks the language before the menu, and A on the language picked (Automatic, Chinese) keeps it and opens the pause menu",
+   "rules": [
+    "GEN-18"
+   ],
+   "env": {
+    "GBADS_LANG_ASK": "1",
+    "LANG": "zh_CN.UTF-8",
+    "LC_ALL": "",
+    "LC_MESSAGES": "",
+    "LANGUAGE": ""
+   },
+   "input": [
+    [
+     200,
+     "SWIPE:0.5,0.99,0.5,0.85"
+    ],
+    [
+     220,
+     "TAP:0.5,0.864"
+    ],
+    [
+     260,
+     "A"
+    ],
+    [
+     264,
+     "-"
+    ]
+   ],
+   "shots": {
+    "lang-game": 190,
+    "lang-pause-ask": 250,
+    "lang-pause-menu": 290
+   },
+   "checks": [
+    {
+     "type": "log",
+     "rule": "GEN-18",
+     "what": "asked at the first pause",
+     "match": "^language: asking \\(first run\\)"
+    },
+    {
+     "type": "log",
+     "rule": "GEN-18",
+     "what": "Automatic kept",
+     "match": "^language: kept auto \\(zh_CN\\)"
+    }
+   ],
+   "golden_mask": [
+    [
+     870,
+     725,
+     1010,
+     750
+    ],
+    [
+     0,
+     0,
+     140,
+     70
+    ]
+   ]
+  },
+  {
+   "id": "aw-lang-not-asked",
+   "kind": "library",
+   "rom": "AWRE",
+   "desc": "a test build (no GBADS_LANG_ASK) on a fresh install: no language question, the game list straight away (issue #92: only releases and the final dev build ask)",
+   "rules": [
+    "GEN-18"
+   ],
+   "env": {
+    "LANG": "zh_CN.UTF-8",
+    "LC_ALL": "",
+    "LC_MESSAGES": "",
+    "LANGUAGE": ""
+   },
+   "shots": {
+    "end": 40
+   },
+   "checks": [
+    {
+     "type": "no_log",
+     "rule": "GEN-18",
+     "what": "not asked",
+     "match": "^language: asking"
+    }
+   ],
+   "golden": []
   }
  ]
 }

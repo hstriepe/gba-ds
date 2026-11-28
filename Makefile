@@ -40,10 +40,26 @@ ifneq ($(SIDE_CODES),)
 SIDE_DEF   += -DGBADS_SIDE_CODES='"$(SIDE_CODES)"'
 endif
 endif
+# LANG_ASK=1: this build asks the language on a first install (issue #92; library.c
+# library_language_ask_built). Without it, only a release version (no -dev) asks; 0 never.
+LANG_ASK   ?=
+ifneq ($(LANG_ASK),)
+SIDE_DEF   += -DGBADS_LANG_ASK=$(LANG_ASK)
+endif
+# WIDE_REF: the branch whose widescreen/ folder the app offers patches from
+# (src/widedl.c; docs/WIDESCREEN.md, WS-6): main unless set (build-rocknix.sh:
+# dev for -dev versions, the branch for a side build)
+WIDE_REF   ?=
+ifneq ($(WIDE_REF),)
+SIDE_DEF   += -DGBADS_WIDE_REF='"$(WIDE_REF)"'
+endif
 OPTFLAGS   ?= -O2 -g
+# RZIP version 2 save states (zstd): libretro-common's rzstd decoder (MIT), vendored in third_party/rzstd
+RZSTD_DIR  := third_party/rzstd
+RZSTD_OBJ  := $(patsubst $(RZSTD_DIR)/src/%.c,$(OUT)/rzstd/%.o,$(wildcard $(RZSTD_DIR)/src/*.c))
 
 override CFLAGS := $(OPTFLAGS) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
-              -DGBADS_VERSION='"$(VERSION)"' $(SIDE_DEF) $(MGBA_DEFS) -I$(MGBA_SRC)/include -I$(MGBA_BUILD)/include -I$(SDL_PREFIX)/include/SDL2 -D_REENTRANT
+              -DGBADS_VERSION='"$(VERSION)"' $(SIDE_DEF) $(MGBA_DEFS) -I$(MGBA_SRC)/include -I$(MGBA_BUILD)/include -I$(SDL_PREFIX)/include/SDL2 -I$(RZSTD_DIR)/include -D_REENTRANT
 LDFLAGS    += -L$(SDL_PREFIX)/lib -Wl,-rpath-link,$(SDL_PREFIX)/lib
 # mGBA's bundled zlib (for .zip ROMs), when it was built with it
 ZLIB_A     := $(wildcard $(MGBA_BUILD)/zlib/libz.a)
@@ -58,7 +74,11 @@ MACOS_SRC  := src/macos.m
 TOOLS_DARWIN := -I$(shell brew --prefix 2>/dev/null || echo /opt/homebrew)/include -L$(shell brew --prefix 2>/dev/null || echo /opt/homebrew)/lib
 endif
 
-CORE_SRC   := src/emu.c src/patch.c src/mapcap.c src/profiles.c src/logo_masks.c
+# The second screen on a leased panel (src/drmlease.c): Wayland's client
+# headers and the drm-lease protocol, vendored in third_party/wayland
+WL_DIR     := third_party/wayland
+WL_SRC     := $(WL_DIR)/drm-lease-v1-protocol.c
+CORE_SRC   := src/emu.c src/patch.c src/mapcap.c src/profiles.c src/logo_masks.c src/climb.c
 # RetroAchievements: rcheevos (MIT), vendored in third_party/rcheevos
 RC_DIR     := third_party/rcheevos
 RC_SRC     := $(wildcard $(RC_DIR)/src/*.c $(RC_DIR)/src/rapi/*.c $(RC_DIR)/src/rcheevos/*.c) $(RC_DIR)/src/rhash/md5.c
@@ -68,13 +88,17 @@ WEBP_DIR   := third_party/libwebp
 WEBP_SRC   := $(wildcard $(WEBP_DIR)/src/dec/*.c $(WEBP_DIR)/src/dsp/*.c $(WEBP_DIR)/src/utils/*.c)
 WEBP_OBJ   := $(patsubst $(WEBP_DIR)/src/%.c,$(OUT)/libwebp/%.o,$(WEBP_SRC))
 
-APP_SRC    := src/main.c src/config.c src/i18n.c src/i18n_data.c src/font.c src/ui.c src/library.c src/mapper.c src/hotkeys.c src/folderpick.c src/game.c src/paths.c src/image.c src/brand_data.c src/bezel.c src/bezel_logo.c src/logo.c src/cheats.c src/esinteg.c src/textfont.c src/pixfont.c src/fonts_data.c src/ra.c src/http.c src/sha256.c src/update.c src/clocks.c $(CORE_SRC)
+# The second-screen module (discussion #75): what a libretro core compiles beside CORE_SRC and
+# src/logo.c, without SDL (make module-check)
+MODULE_SRC := src/workers.c src/twins.c src/toggle.c src/second.c src/hud.c src/rgba.c
+
+APP_SRC    := src/main.c src/config.c src/i18n.c src/i18n_data.c src/font.c src/ui.c src/library.c src/mapper.c src/hotkeys.c src/folderpick.c src/game.c src/paths.c src/image.c src/brand_data.c src/bezel.c src/bezel_logo.c src/logo.c src/cheats.c src/esinteg.c src/textfont.c src/pixfont.c src/fonts_data.c src/ra.c src/http.c src/sha256.c src/widedl.c src/update.c src/clocks.c $(MODULE_SRC) src/drmlease.c src/upscale.c src/upscale_shaders.c $(WL_SRC) $(CORE_SRC)
 
 all: $(OUT)/gba-ds
 
-$(OUT)/gba-ds: $(APP_SRC) $(MACOS_SRC) src/*.h VERSION $(MGBA_BUILD)/libmgba.a $(RC_OBJ) $(WEBP_OBJ)
+$(OUT)/gba-ds: $(APP_SRC) $(MACOS_SRC) src/*.h $(WL_DIR)/*.h VERSION $(MGBA_BUILD)/libmgba.a $(RC_OBJ) $(WEBP_OBJ) $(RZSTD_OBJ)
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -DGBADS_RA -I$(RC_DIR)/include -I$(RC_DIR)/src -I$(WEBP_DIR) -o $@ $(APP_SRC) $(RC_OBJ) $(WEBP_OBJ) $(if $(MACOS_SRC),$(OUT)/macos.o) $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) -DGBADS_RA -I$(WL_DIR) -I$(RC_DIR)/include -I$(RC_DIR)/src -I$(WEBP_DIR) -o $@ $(APP_SRC) $(RC_OBJ) $(WEBP_OBJ) $(RZSTD_OBJ) $(if $(MACOS_SRC),$(OUT)/macos.o) $(LDFLAGS) $(LIBS)
 
 $(OUT)/gba-ds: $(if $(MACOS_SRC),$(OUT)/macos.o)
 
@@ -90,17 +114,40 @@ $(OUT)/libwebp/%.o: $(WEBP_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(OPTFLAGS) $(if $(DARWIN),-arch arm64 -mmacosx-version-min=$(MACOS_MIN)) -std=gnu11 -I$(WEBP_DIR) -c $< -o $@
 
-# development tools (host only; need libpng)
-tools: $(OUT)/harness
+$(OUT)/rzstd/%.o: $(RZSTD_DIR)/src/%.c $(shell find $(RZSTD_DIR)/include -name '*.h')
+	@mkdir -p $(dir $@)
+	$(CC) $(OPTFLAGS) $(if $(DARWIN),-arch arm64 -mmacosx-version-min=$(MACOS_MIN)) -std=gnu11 -I$(RZSTD_DIR)/include -c $< -o $@
 
-$(OUT)/harness: tools/harness.c tools/png.c $(CORE_SRC) src/logo.c src/*.h
+# development tools (host only; need libpng)
+tools: $(OUT)/harness $(OUT)/second-driver
+
+$(OUT)/harness: tools/harness.c tools/png.c $(CORE_SRC) src/logo.c src/*.h $(RZSTD_OBJ)
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) $(TOOLS_DARWIN) -o $@ tools/harness.c tools/png.c $(CORE_SRC) src/logo.c $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lpng -lpthread -lm $(if $(DARWIN),-lz -liconv -framework CoreFoundation)
+	$(CC) $(CFLAGS) $(TOOLS_DARWIN) -o $@ tools/harness.c tools/png.c $(CORE_SRC) src/logo.c $(RZSTD_OBJ) $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lpng -lpthread -lm $(if $(DARWIN),-lz -liconv -framework CoreFoundation)
 
 clean:
 	rm -rf build
 
-.PHONY: all tools clean
+.PHONY: all tools clean module-check
+
+# The second-screen module and the core it runs on, built with no SDL include path and linked
+# with no SDL library, then run (tools/module_check.c): it stays what a libretro core can compile
+# (discussion #75). CI runs it (.github/workflows/module.yml).
+NOSDL_SRC    := $(MODULE_SRC) $(CORE_SRC) src/logo.c
+NOSDL_CFLAGS  = $(filter-out -I$(SDL_PREFIX)/include/SDL2,$(CFLAGS)) -Werror=implicit-function-declaration
+module-check: $(OUT)/module-check $(OUT)/second-driver
+	$(OUT)/module-check
+	python3 tools/module_settings.py
+
+# the module's reference driver (tools/second_driver.c): replays a trace of the app's calls into the
+# module (GBADS_MODULE_TRACE) with only the module; regress.py's "driver" cases compare it with the app
+$(OUT)/second-driver: tools/second_driver.c $(NOSDL_SRC) src/*.h $(MGBA_BUILD)/libmgba.a $(RZSTD_OBJ)
+	@mkdir -p $(OUT)
+	$(CC) $(NOSDL_CFLAGS) -o $@ tools/second_driver.c $(NOSDL_SRC) $(RZSTD_OBJ) $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lpthread -lm
+
+$(OUT)/module-check: tools/module_check.c $(NOSDL_SRC) src/*.h $(MGBA_BUILD)/libmgba.a $(RZSTD_OBJ)
+	@mkdir -p $(OUT)
+	$(CC) $(NOSDL_CFLAGS) -o $@ tools/module_check.c $(NOSDL_SRC) $(RZSTD_OBJ) $(MGBA_BUILD)/libmgba.a $(ZLIB_A) -lpthread -lm
 
 # tests for the interface's language and its fonts (tools/test_i18n.c); DejaVu Sans is
 # only the stand-in fallback face for the font part

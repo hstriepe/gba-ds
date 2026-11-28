@@ -140,6 +140,8 @@ void android_config_defaults(Config* c) {
 			              "A screen with no file of its own gets GBA DS's generated bezel in its default colors.\n\n"
 			              "Names for one scaling or screen shape, and more, in the wiki:\n"
 			              "https://github.com/kyannon/gba-ds/wiki/Overlays\n" },
+			{ "bios", "Optional: your own GBA BIOS, as gba_bios.bin (16 KB), for save states made with one.\n"
+			          "Switch it on in Settings > System > GBA BIOS. Off, games run with GBA DS's built-in BIOS.\n" },
 			{ "logos", "Optional: your own logo images (<CODE>.png or .bmp) override the ones extracted from the games.\n" },
 			{ "screenshots", NULL },
 		};
@@ -855,6 +857,36 @@ JNIEXPORT void JNICALL Java_io_github_kyannon_gbads_SecondScreen_nativeSetPpi(JN
 
 float android_display_ppi(int view) {
 	return view == 0 || view == 1 ? displayPpi[view] : 0;
+}
+
+/* ---- A display came or went while a game runs (issue #90): the activity
+ * restarts the game with the new layout. Whatever the player's Save on quit
+ * and Auto-load say, that restart keeps their place: nativeRelayout() (called
+ * just before the quit) makes the quit save, and relayout.flag in the app's
+ * own storage (written before the quit, read and removed once at the next
+ * start) makes that start load. */
+static volatile bool relayoutQuit;
+
+JNIEXPORT void JNICALL Java_io_github_kyannon_gbads_GbaDsActivity_nativeRelayout(JNIEnv* env, jclass cls) {
+	relayoutQuit = true;
+}
+
+bool android_relayout_save(void) {
+	return relayoutQuit;
+}
+
+bool android_relayout_resume(void) {
+	static int known = -1;
+	if (known < 0) {
+		const char* files = getenv("GBADS_APP_FILES");
+		char path[1100];
+		known = 0;
+		if (files && *files) {
+			snprintf(path, sizeof(path), "%s/relayout.flag", files);
+			if (access(path, F_OK) == 0) known = 1, remove(path);
+		}
+	}
+	return known == 1;
 }
 
 /* Called on the UI thread; holding the lock means the native side is done

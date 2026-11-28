@@ -98,6 +98,11 @@ typedef struct {
 	 * top `under` rows below their lowest (F-Zero: GP Legend's LAST under
 	 * SPARE MACHINE or BEST TIME); with none there, by how / vhow */
 	int under;
+	/* hud.moves: also while the `layout` probes don't match and on the
+	 * other layer (alt.rows too): a piece that always goes (Pokemon Mystery
+	 * Dungeon's black left edge back onto the game screen, its status
+	 * line centred) */
+	bool always;
 } HudMove;
 
 /* Bytes written into the ROM when the game starts, if the ROM holds `orig`
@@ -123,7 +128,7 @@ typedef struct {
 	 * the lettering's dithered or translucent edge (Mario & Luigi's
 	 * sky, its shadow's specks), or a layer's own background
 	 * (Battle Network Rockman EXE's blue) */
-	uint32_t edgeClear[4];
+	uint32_t edgeClear[8];
 	/* a drop shadow of this colour (0xRRGGBB; either of a game's two
 	 * colour sets) stays only below and right of the lettering:
 	 * where there's lettering (or shadow kept) up to shadowReach rows
@@ -169,6 +174,9 @@ typedef struct MapProfile {
 	 * spot its info box takes no L; B twice, back to the map, first) */
 	MemProbe openAltIf[2];
 	MacroStep openAlt[8];
+	/* A byte written on the hidden copy before `open` (Kirby & The Amazing
+	 * Mirror: the pause menu's page, kept by the game from its last use) */
+	struct { uint32_t addr; uint8_t value; } openPoke;
 	/* Optional second step: once the map is up (mem probes), if open2If
 	 * matches, wait open2Delay frames and press open2 (A Link to the Past:
 	 * L again on the world map zooms out to the whole world). */
@@ -188,6 +196,10 @@ typedef struct MapProfile {
 	/* No map yet: the game is listed and the second screen shows its logo,
 	 * but nothing is captured. */
 	bool logoOnly;
+	/* The game is played by turning the console (a cartridge gyro: WarioWare: Twisted!): the
+	 * device's gyro goes to the game, and the touchscreen can stand in for it as a dial, the
+	 * second screen showing the game's menu wheel turning with it (src/ww_twisted.inc). */
+	bool gyroDial;
 	/* Logo-only games: screens worth copying to the second screen (Tony
 	 * Hawk's goal sheets). When `show` matches (at least showMin probes, for
 	 * `stable` frames) the game screen is copied there and stays through play,
@@ -345,6 +357,24 @@ typedef struct MapProfile {
 			} carry;
 		} live;
 	} tall;
+	/* Logo-only games whose levels are climbs (climb.c, game.c update_climb): in a
+	 * level (`on`) the game is on the bottom screen and a copy of it, its camera a
+	 * screen higher, draws the level above it on the top one. `shift`: the 16.16
+	 * camera rows lowered in the copy before each frame (the camera's y first, its
+	 * picture used only while it's a screen above the game's). `patch`: ARM words
+	 * for the copy's ROM, each only if `orig` is there, so the code that moves the
+	 * camera with the player works on the real row. `layer`: each layer's table of
+	 * map blocks (pointer word), x and y words (16.16) and 32x32 map in VRAM, filled
+	 * for the lowered rows. */
+	struct {
+		MemProbe on[3];
+		/* the shadow sprite table: the copy's sprites alike the game's in the same slot
+		 * and place are fixed to the screen (a speech bubble) and left out */
+		uint32_t oam;
+		uint32_t shift[8];
+		struct { uint32_t addr, orig, word; } patch[24];
+		struct { uint32_t table, x, y, map; } layer[3];
+	} climb;
 	/* A second button layout for games ported from four-face-button
 	 * consoles (Tony Hawk's: GBA L / R stand in for two face buttons). The
 	 * four-face layout puts GBA A on the top face button, B on the bottom,
@@ -424,6 +454,11 @@ typedef struct MapProfile {
 	 * has no status bar (SM4-11) */
 	MemProbe logoIf[2];
 	MemProbe logoIfOr[2]; /* or while every one of these matches */
+	/* when they stop, the last picture at once (a pause screen closing), not the logo till a new one */
+	bool logoIfLast;
+	/* Keys the game doesn't get while every `when` probe matches, with two screens only: a button whose
+	 * only job there is what the second screen already shows (Pokemon Mystery Dungeon's SELECT, the floor map) */
+	struct { uint16_t keys; MemProbe when[4]; } swallow;
 
 	/* Values that change when the player enters a new room; a change
 	 * triggers an early capture. Only addr/size are used. */
@@ -471,8 +506,25 @@ typedef struct MapProfile {
 			 * picture (a full GBA screen) instead of the logo (Super
 			 * Mario Advance 4: its status bar over the inventory) */
 			bool mapBelow;
+			/* On this layer the HUD is only its top `rows` (0: the whole screen): the game draws the rest, and the
+			 * second screen keeps the main layer's last picture below them, from a frame where every `heldWhen`
+			 * probe matches (Pokemon Mystery Dungeon: its status line live over the kept map) */
+			int rows;
+			MemProbe heldWhen[2];
 		} alt;
 		SpriteRule objs[12]; /* the sprites that move with it */
+		/* `on` turns it on only while a sprite like onWith shows (its box, tiles, priority, palettes
+		 * and shapes); then `on` alone keeps it on, till onLost frames without one (counted again
+		 * from a state load) (Mario Pinball Land: a room, by its item slot's frame; Densetsu no
+		 * Stafy 3: the HUD's face, which a stage's opening conversation doesn't have and a later
+		 * one hides) */
+		SpriteRule onWith;
+		int onLost;
+		/* Every frame, on the main thread, with whether the split is on (false also at a state
+		 * load): the profile may draw the HUD's sprites elsewhere in its picture
+		 * (emu_hud_place). rom: the game's file, for a copy of its own (Mario Pinball Land:
+		 * the counters where the game puts them paused, from a paused copy: MPL-3) */
+		void (*place)(Emu* live, const char* rom, bool on);
 		/* While every `layout` probe matches (racing, not the results):
 		 * HUD pixels in `sign` stay on the game screen when the HUD has
 		 * nothing else on those rows within 40 pixels either side (Mario
@@ -587,6 +639,9 @@ typedef struct MapProfile {
 		 * Advance 4: World-e's status bar sliding off and back as the
 		 * inventory opens and closes, SM4-8) */
 		MemProbe freeze[2];
+		/* The HUD split draws some of its sprites with other tiles each frame (Cruis'n Velocity's time
+		 * box, the race's total once it's over): fills oamIndex / tile (up to 8), returns how many. */
+		int (*retile)(Emu* e, int* oamIndex, uint16_t* tile);
 		/* The top rows of the last map picture (the world map's level
 		 * list: its title row with the level's name) kept above the HUD,
 		 * which moves down that far (Super Mario Advance 2, SMA-7) */
@@ -778,7 +833,7 @@ typedef struct MapProfile {
 	 * of only `underLayers` (bits 0-3 BG0-3, bit 4 sprites), made once per
 	 * capture: bezel pieces drawn over the map, like Zero Mission's corner
 	 * minimap, give way to the map underneath. */
-	struct { int x0, y0, x1, y1; } underRect[2];
+	struct { int x0, y0, x1, y1; } underRect[3];
 	unsigned underLayers;
 	SpriteRule underHide[2]; /* also left out of that render (on top of captureHide) */
 
@@ -826,6 +881,23 @@ typedef struct MapProfile {
 	/* Instead of compose: several pictures (pages shown in turn, `*step`
 	 * emulated frames each); out[0..*n) on return, *n the most on the way in */
 	const char* (*composePages)(Emu* s, const void* state, uint32_t* const* out, int* n, int* step, int w, int h);
+	/* composePages' pictures are pages (a status screen's three pages, the
+	 * party's members), which keep turning at their pace through new
+	 * captures, and not a marker's blinking frames (those restart with each
+	 * capture). Set for every game whose rules file has Toggle `pages`
+	 * (GEN-14): what the toggle turns by hand. */
+	bool pages;
+	/* composePages' pictures are views (the world map and the party screen):
+	 * the first shows, and stays, as it always did; the toggle (GEN-14) turns
+	 * to the next until the subject changes. Held: both come from the one
+	 * capture. Set for every game whose Toggle row says `views`, `HELD`. */
+	bool views;
+	/* GEN-14, ONPRESS: the other view isn't kept: a press makes the hidden copy
+	 * capture it (compose reads mapcap_alt_view()), the picture fading to black
+	 * while the game finds it. A press turns back the same way. altHere (optional):
+	 * whether the live game has another view right now (else always). */
+	bool onPress;
+	bool (*altHere)(Emu* live);
 	/* Values computed from the game's memory, read by MemProbes at
 	 * addresses from 0xF0000000 (memprobe_virtual, mapcap.h): Fire
 	 * Emblem's processes, which move between slots. */
@@ -863,9 +935,19 @@ typedef enum {
 } DumpKind;
 /* name: No-Intro's name of the dump, or the mod's (NULL when not known) */
 DumpKind profile_dump(const char* gameCode, uint32_t crc, const char** name);
+/* A mod in the game's Mods row: it keeps a logo of its own (GEN-20) */
+bool profile_known_mod(const char* gameCode, uint32_t crc);
+/* A Game Boy / Game Boy Color game (its code is the app's own, lower case: emu_rom_code), and whether
+ * its ROM's CRC32 is in No-Intro's Game Boy / Game Boy Color lists (src/dumps_gb_data.h, GB-14) */
+bool profile_code_is_gb(const char* gameCode);
+bool profile_gb_dump_known(uint32_t crc);
 /* The release's No-Intro name, without a revision's or reissue's mark
  * ("Mario & Luigi - Superstar Saga (USA)"); false if it has no list of dumps */
 bool profile_release_name(const char* gameCode, char* out, size_t size);
+/* A dump with no game code in its header: the code it's filed under, if its
+ * CRC32 is a known one (NULL if not); _size: a file that size might be one */
+const char* profile_codeless(uint32_t crc);
+bool profile_codeless_size(long long size);
 /* The ROM being played (its code and CRC32; NULL: none): a known colour
  * patch's result gets its profile with the colours it changes swapped */
 void profile_set_rom(const char* gameCode, uint32_t crc);

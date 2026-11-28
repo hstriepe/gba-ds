@@ -7,6 +7,7 @@
 | Mods | `AFEJ` English v1.2.1 (FE6 Localization fan translation) `197de10b` (tested) |
 | Profile | `src/profiles.c`: the `AFEJ` entry (Fire Emblem's `fe_virt` / `fe_compose`; its addresses in `feRegions`) |
 | Tests | `tests/regress/fire-emblem-fuuin-no-tsurugi.json` (`tools/regress.py fire-emblem-fuuin-no-tsurugi`) |
+| Toggle | `pages`: a unit's three pages (FE6-2) · GEN-14 |
 | Status | supported (merged into dev Nov 16, 2026, for v1.5.4) |
 
 What GBA DS does with this game. Each rule is a promise the profile keeps; the regression tests check them (the cases citing a rule are listed by `tools/regress.py --list fire-emblem-fuuin-no-tsurugi`). Change a rule here first when the behaviour is meant to change, then the profile, then the tests and goldens. Rule numbers are never reused: a dropped rule stays, marked *retired*.
@@ -33,7 +34,7 @@ Asked what the game would have put on a second GBA screen: what a player keeps o
 
 **FE6-5. Game screen untouched.** Nothing leaves the game screen: the unit, terrain and goal windows, menus, the battle forecast, conversations and the phase banners stay where the game draws them. (FE-10.)
 
-**FE6-6. The English translation.** On the FE6 Localization fan translation (v1.2.1, as a patched ROM or with its UPS patch on the Japanese ROM, GEN-9) FE6-1 to FE6-5 hold as they are: the same addresses and screens, the status screen in English. Its logo is the translation's own title (FIRE EMBLEM in English, The Binding Blade on the ribbon, ™ for ®), taken the same way. Known issue: GBA DS keeps one logo per game, made from whichever of the two is started first, so with both the Japanese game and the translation on the card, both show that one's title.
+**FE6-6. The English translation.** On the FE6 Localization fan translation (v1.2.1, as a patched ROM or with its UPS patch on the Japanese ROM, GEN-9) FE6-1 to FE6-5 hold as they are: the same addresses and screens, the status screen in English. Its logo is the translation's own title (FIRE EMBLEM in English, The Binding Blade on the ribbon, ™ for ®), taken the same way and kept apart from the Japanese game's (GEN-20), so with both on the card each shows its own. (Until GEN-20 both showed the title of whichever was started first.)
 
 ## Not covered yet
 
