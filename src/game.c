@@ -6302,8 +6302,12 @@ static void mac_command(int mc) {
 		menuOpen = false;
 		ui_osd("Game restarted");
 		break;
-	case MC_STACKED: /* (a toggle: stacked or one screen; the Mac has no side by side) */
-		mac_layout(strcmp(cfg->layout, "single") ? "single" : "span-v");
+	case MC_STACKED: /* (toggles: this layout, or one screen) */
+		mac_layout(!strcmp(cfg->layout, "span-v") ? "single" : "span-v");
+		second_new_subject(); /* (a new map now: the second screen back) */
+		break;
+	case MC_SIDE_BY_SIDE:
+		mac_layout(!strcmp(cfg->layout, "span-h") ? "single" : "span-h");
 		second_new_subject(); /* (a new map now: the second screen back) */
 		break;
 	case MC_SWAP: swap_screens(); break;

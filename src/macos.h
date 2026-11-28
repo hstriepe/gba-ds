@@ -36,8 +36,8 @@ void macos_resource_dir(char* out, size_t n);
  * data_dir, save_dir and screenshot_dir get their Mac places when they
  * weren't set. Writes the data folder into dataDir. */
 void macos_setup(Config* cfg, const char* resDir, char* dataDir, size_t n);
-/* After every settings file: the Mac has two layouts only, stacked (span-v)
- * or one screen; any other (span-h, auto, dual) becomes stacked. */
+/* After every settings file: the Mac has three layouts, stacked (span-v),
+ * side by side (span-h) or one screen; auto and dual become stacked. */
 void macos_settle_layout(Config* cfg);
 
 /* The window's picture is opaque whatever alpha the renderer leaves in it */
@@ -58,7 +58,8 @@ enum {
 	MC_RESET,
 	MC_QUICK_SAVE,
 	MC_QUICK_LOAD,
-	MC_STACKED,       /* the second screen on (stacked under the game) or off */
+	MC_STACKED,       /* the second screen stacked under the game, or off (one screen) */
+	MC_SIDE_BY_SIDE,  /* the second screen beside the game, or off */
 	MC_SWAP,
 	MC_SHADER,
 	MC_SIZE_2, MC_SIZE_3, MC_SIZE_4, MC_SIZE_5,

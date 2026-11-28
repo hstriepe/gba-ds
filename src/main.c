@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
 	config_load_file(&cfg, path);
 	config_parse_args(&cfg, argc, argv);
 #if defined(__APPLE__)
-	macos_settle_layout(&cfg); /* (prefs.cfg may hold a side-by-side layout from before) */
+	macos_settle_layout(&cfg); /* (prefs.cfg or the command line may hold auto or dual) */
 #endif
 	if (firstInstall && library_language_ask_built()) {
 		/* kept as pending in prefs.cfg, so a first run that never reaches the game list or the pause menu asks next time */
