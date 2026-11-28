@@ -151,6 +151,13 @@ typedef struct Config {
 	bool gbaBios;         /* run games with the player's own GBA BIOS (<data folder>/bios/gba_bios.bin; issue #78; Settings > System) */
 	int romPath;          /* the selected game's full path and file name under the game list's other screen: 0 off, else its font size 1x-4x (show_rom_path; Settings > System; GEN-21) */
 	bool updateCheck;     /* look for a new release once a day (the game list's Settings can switch it) */
+#ifdef __APPLE__
+	/* the Mac window (macos.m, as GB App Builder's GB Player): kept in prefs.cfg */
+	bool macBorderless;   /* mac_borderless: no title bar, floats above other windows */
+	bool macLockAspect;   /* mac_lock_aspect: resizing keeps the layout's shape (on) */
+	bool macKeepAwake;    /* mac_keep_awake: the display doesn't sleep while a game runs (on) */
+	bool macPauseInactive; /* mac_pause_inactive: the game pauses while another app is in front */
+#endif
 	char updateUrl[256];  /* testing: the release API to ask instead of GitHub's */
 	char rom[512];        /* launch straight into this game (skips the library) */
 	char language[16];    /* the interface's language (i18n.h): auto (the system's), en or a catalogue's code */

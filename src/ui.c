@@ -680,6 +680,9 @@ bool ui_init(Config* c, bool wantDual) {
 			fprintf(stderr, "BananaOS: both panels as one window, %dx%d\n", ww, wh);
 		}
 		if (!create_view(&views[0], 0, "GBA DS", fullscreen, ww, wh)) return false;
+#ifdef __APPLE__
+		macos_window_setup(views[0].win); /* (the media window: title bar, borderless, aspect, display sleep) */
+#endif
 	}
 	ui_layout();
 	return true;

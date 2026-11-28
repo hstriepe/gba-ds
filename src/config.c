@@ -56,6 +56,8 @@ void config_defaults(Config* c) {
 #ifdef __APPLE__
 	/* (a Mac window or full screen: the picture on black, no bezel round it; the pause menu still has it) */
 	c->overlayMode = OVM_OFF;
+	c->macLockAspect = true;
+	c->macKeepAwake = true;
 #else
 	c->overlayMode = OVM_GENERATED;
 #endif
@@ -121,6 +123,12 @@ static bool set_option(Config* c, const char* key, const char* val) {
 		return true; \
 	}
 	STR("layout", layout)
+#ifdef __APPLE__
+	BOOL("mac_borderless", macBorderless)
+	BOOL("mac_lock_aspect", macLockAspect)
+	BOOL("mac_keep_awake", macKeepAwake)
+	BOOL("mac_pause_inactive", macPauseInactive)
+#endif
 	BOOL("swap", swap)
 	STR("scale", scale)
 	STR("map_scale", mapScale)

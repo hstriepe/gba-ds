@@ -7305,8 +7305,45 @@ static enum GameExit game_run_inner(Config* c, const char* rom, bool fromLibrary
 			ui_present();
 			SDL_Delay(16);
 			next = SDL_GetPerformanceCounter() / freq;
+#ifdef __APPLE__
+			macos_game_paused(true);
+#endif
 			continue;
 		}
+#ifdef __APPLE__
+		{
+			/* Game › Pause, or another app in front (mac_pause_inactive): the
+			 * game held, its picture kept, silent; back as from the menu */
+			static bool macHeld;
+			bool hold = macos_hold();
+			if (hold != macHeld) {
+				macHeld = hold;
+				if (hold && audio) {
+					SDL_PauseAudioDevice(audio, 1);
+					SDL_ClearQueuedAudio(audio);
+				}
+				if (!hold) {
+					suppress_held();
+					if (audio) SDL_PauseAudioDevice(audio, 0);
+					next = SDL_GetPerformanceCounter() / freq;
+					fpsT0 = next;
+					fpsFrames = 0;
+					pacedMisses = pacedMissSecs = 0;
+					hl.quietUntil = sec.frame + 150;
+				}
+			}
+			macos_game_paused(hold);
+			if (hold) {
+				ra_idle();
+				ui_clear();
+				draw_game();
+				ui_present();
+				SDL_Delay(16);
+				next = SDL_GetPerformanceCounter() / freq;
+				continue;
+			}
+		}
+#endif
 
 		if (btn_pressed(B_L3) && modBtn != B_L3 && hkHold[HOLD_REWIND] != B_L3 && hkHold[HOLD_FF] != B_L3) bar_toggle(); /* (L3: the quick menu, as a swipe up, unless it's held to rewind or fast-forward) */
 

@@ -48,6 +48,22 @@ void macos_renderer_opaque(struct SDL_Renderer* ren);
 struct SDL_Window;
 bool macos_window_fullscreen(struct SDL_Window* win);
 
+/* The game window as a media window, as GB App Builder's GB Player has it:
+ * a title bar over the picture that shows with the mouse at the top and
+ * hides 2 s later; borderless (floating) on mac_borderless; resizing held
+ * to the layout's shape on mac_lock_aspect; the pointer hidden in full
+ * screen when the mouse rests; the display kept awake (mac_keep_awake). */
+void macos_window_setup(struct SDL_Window* win);
+/* A Mac setting changed by the menu bar or the Settings window: kept in
+ * prefs.cfg (as the pause menu's choices are) */
+void macos_pref_save(const char* key, const char* value);
+/* The game is held: Game › Pause, or another app in front with
+ * mac_pause_inactive. game.c doesn't run frames while it is. */
+bool macos_hold(void);
+/* each frame of a game: whether it is paused (its menu, or held: no
+ * display-sleep assertion then); also runs the window's checks */
+void macos_game_paused(bool paused);
+
 /* The menu bar (after ui_init: SDL puts its own up as video starts). */
 void macos_menu_install(Config* cfg);
 

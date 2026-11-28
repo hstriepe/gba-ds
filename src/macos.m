@@ -39,6 +39,7 @@ static NSString* ini_value(NSString* path, NSString* key) {
 }
 
 void macos_setup(Config* cfg, const char* resDir, char* dataDir, size_t n) {
+	mcfg = cfg;
 	@autoreleasepool {
 		NSString* res = @(resDir);
 		NSFileManager* fm = NSFileManager.defaultManager;
@@ -122,6 +123,249 @@ void macos_renderer_opaque(SDL_Renderer* ren) {
 	}
 }
 
+/* ------------------------------------------------------------- window */
+
+static NSWindow* gameWindow;
+static bool manualPause, gamePaused;
+
+void macos_pref_save(const char* key, const char* value) {
+	if (!mcfg || !mcfg->stateDir[0]) return;
+	char path[1100];
+	snprintf(path, sizeof(path), "%s/prefs.cfg", mcfg->stateDir);
+	const char* kv[1][2] = { { key, value } };
+	config_kv_update(path, "# written by gba-ds's menus; overrides gba-ds.cfg", 1, kv);
+}
+
+bool macos_hold(void) {
+	return manualPause || (mcfg && mcfg->macPauseInactive && !NSApp.active);
+}
+
+static void window_tick(void);
+
+void macos_game_paused(bool paused) {
+	gamePaused = paused;
+	window_tick();
+}
+
+/* the window's shape for the layout (the picture's, at any scale) */
+static NSSize layout_shape(void) {
+	int w, h;
+	ui_layout_window_size(mcfg ? mcfg->layout : "single", 1, &w, &h);
+	return NSMakeSize(w, h);
+}
+
+static const NSWindowStyleMask titledMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
+                                            NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
+
+@interface GBADSWindowKeeper : NSObject
+- (void)tick:(NSTimer*)t;
+- (void)showTitle:(BOOL)on;
+- (void)toggleFullScreen;
+@end
+
+@implementation GBADSWindowKeeper {
+	CFAbsoluteTime topSince, mouseMovedAt;
+	NSPoint lastMouse;
+	BOOL titleShown, pointerHidden;
+	int borderless; /* -1: not applied yet */
+	int aspectLocked;
+	char aspectLayout[16];
+	id<NSObject> awake, fullScreenActivity;
+	NSRect beforeFullScreen; /* the window's frame, put back after full screen */
+	int restoreTicks;
+	BOOL wasFullScreen;
+	NSSize shapeBefore; /* the layout's shape when full screen began */
+}
+
+- (instancetype)init {
+	if ((self = [super init])) {
+		borderless = aspectLocked = -1;
+	}
+	return self;
+}
+
+- (BOOL)fullScreen {
+	return (gameWindow.styleMask & NSWindowStyleMaskFullScreen) != 0;
+}
+
+- (BOOL)isBorderless {
+	return (gameWindow.styleMask & NSWindowStyleMaskTitled) == 0;
+}
+
+
+/* the title bar over the picture: its title and buttons shown or not */
+- (void)showTitle:(BOOL)on {
+	titleShown = on;
+	gameWindow.titleVisibility = on ? NSWindowTitleVisible : NSWindowTitleHidden;
+	for (NSNumber* b in @[ @(NSWindowCloseButton), @(NSWindowMiniaturizeButton), @(NSWindowZoomButton) ])
+		[gameWindow standardWindowButton:b.integerValue].hidden = !on;
+}
+
+/* a new style mask, the picture (the content) kept where it is and as big */
+- (void)setMask:(NSWindowStyleMask)mask {
+	NSRect content = [gameWindow contentRectForFrameRect:gameWindow.frame];
+	gameWindow.styleMask = mask;
+	[gameWindow setFrame:[gameWindow frameRectForContentRect:content] display:YES];
+}
+
+- (void)applyBorderless:(BOOL)on {
+	if (self.fullScreen) return;
+	borderless = on;
+	if (on) {
+		[self setMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable];
+		gameWindow.level = NSFloatingWindowLevel;
+		gameWindow.hasShadow = YES;
+		gameWindow.movableByWindowBackground = YES;
+	} else {
+		[self setMask:titledMask];
+		gameWindow.level = NSNormalWindowLevel;
+		gameWindow.movableByWindowBackground = NO;
+		gameWindow.titlebarAppearsTransparent = YES;
+		[self showTitle:NO];
+	}
+	[gameWindow makeKeyAndOrderFront:nil];
+	aspectLocked = -1;
+}
+
+- (void)applyAspect {
+	bool lock = mcfg && mcfg->macLockAspect;
+	const char* lay = mcfg ? mcfg->layout : "single";
+	if (lock == aspectLocked && !strcmp(lay, aspectLayout)) return;
+	aspectLocked = lock;
+	snprintf(aspectLayout, sizeof(aspectLayout), "%s", lay);
+	if (lock) gameWindow.contentAspectRatio = layout_shape();
+	else gameWindow.contentResizeIncrements = NSMakeSize(1, 1); /* (cancels the aspect ratio) */
+}
+
+- (void)tick:(NSTimer*)t {
+	if (!gameWindow || !mcfg) return;
+	if (mcfg->macBorderless != borderless && !self.fullScreen) [self applyBorderless:mcfg->macBorderless];
+	if (!self.fullScreen && !self.isBorderless && gameWindow.styleMask != titledMask) {
+		/* (SDL puts its own style back after full screen: the title bar over the picture again; the frame
+		   macOS gave back is the window's from before full screen, so it is kept) */
+		gameWindow.styleMask = titledMask;
+		if (!NSIsEmptyRect(beforeFullScreen)) [gameWindow setFrame:beforeFullScreen display:YES];
+		gameWindow.titlebarAppearsTransparent = YES;
+		[self showTitle:NO];
+		aspectLocked = -1;
+	}
+	/* full screen in and out (seen here: SDL is the window's delegate) */
+	BOOL fs = self.fullScreen;
+	if (fs != wasFullScreen) {
+		wasFullScreen = fs;
+		if (fs) [self enteredFullScreen];
+		else [self exitedFullScreen];
+	}
+	if (!fs && restoreTicks == 0 && !self.isBorderless && gameWindow.styleMask == titledMask) beforeFullScreen = gameWindow.frame;
+	if (restoreTicks > 0 && !fs) {
+		if (--restoreTicks == 0) beforeFullScreen = NSZeroRect;
+		else if (!NSEqualRects(gameWindow.frame, beforeFullScreen)) [gameWindow setFrame:beforeFullScreen display:YES];
+	}
+	[self applyAspect];
+	CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+	NSPoint m = NSEvent.mouseLocation;
+	BOOL moved = !NSEqualPoints(m, lastMouse);
+	lastMouse = m;
+	if (moved) mouseMovedAt = now, pointerHidden = NO;
+	if (self.fullScreen) {
+		/* the pointer hides 2 s after the mouse stops, until it moves */
+		if (!pointerHidden && now - mouseMovedAt > 2 && NSApp.active) {
+			[NSCursor setHiddenUntilMouseMoves:YES];
+			pointerHidden = YES;
+		}
+	} else if (!self.isBorderless) {
+		/* the title bar: shown while the mouse is in the window's top strip, hidden 2 s after it leaves */
+		NSRect f = gameWindow.frame;
+		BOOL inTop = NSApp.active && NSPointInRect(m, f) && m.y > NSMaxY(f) - 28;
+		if (inTop) {
+			topSince = now;
+			if (!titleShown) [self showTitle:YES];
+		} else if (titleShown && now - topSince > 2) {
+			[self showTitle:NO];
+		}
+	}
+	/* the display kept awake while a game runs in a visible window */
+	BOOL playing = mcfg->macKeepAwake && !gamePaused && !macos_hold() && gameWindow.visible && !gameWindow.miniaturized && !NSApp.hidden;
+	if (playing && !awake) {
+		awake = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityIdleDisplaySleepDisabled | NSActivityIdleSystemSleepDisabled
+		                                                     reason:@"Playing a game"];
+	} else if (!playing && awake) {
+		[NSProcessInfo.processInfo endActivity:awake];
+		awake = nil;
+	}
+}
+
+- (void)toggleFullScreen {
+	if (self.isBorderless) {
+		/* full screen needs a titled window: borderless goes off, as in GB Player */
+		mcfg->macBorderless = false;
+		macos_pref_save("mac_borderless", "0");
+		[self applyBorderless:NO];
+	}
+	[gameWindow toggleFullScreen:nil];
+}
+
+- (void)enteredFullScreen {
+	shapeBefore = layout_shape();
+	[self showTitle:YES]; /* (full screen shows the title bar with the menu bar) */
+	if (!fullScreenActivity)
+		fullScreenActivity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
+		                                                                  reason:@"Playing a game in full screen"];
+}
+
+- (void)exitedFullScreen {
+	if (fullScreenActivity) [NSProcessInfo.processInfo endActivity:fullScreenActivity];
+	fullScreenActivity = nil;
+	[self showTitle:NO];
+	aspectLocked = -1;
+	restoreTicks = 10; /* (about a second: SDL sets its own size as it leaves full screen) */
+	NSSize shape = layout_shape();
+	if (!NSIsEmptyRect(beforeFullScreen) && !NSEqualSizes(shape, shapeBefore) && shapeBefore.height > 0) {
+		/* the layout changed in full screen: the window at its old scale, in the new shape, its top left kept */
+		CGFloat scale = beforeFullScreen.size.height / shapeBefore.height;
+		NSRect r = beforeFullScreen;
+		r.size = NSMakeSize(round(shape.width * scale), round(shape.height * scale));
+		r.origin.y = NSMaxY(beforeFullScreen) - r.size.height;
+		beforeFullScreen = r;
+	}
+}
+@end
+
+static GBADSWindowKeeper* keeper;
+
+/* (from the game loop, each frame: SDL's event pump gives a timer no turn) */
+static void window_tick(void) {
+	static CFAbsoluteTime last;
+	CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+	if (!keeper || now - last < 0.1) return;
+	last = now;
+	@autoreleasepool {
+		[keeper tick:nil];
+	}
+}
+
+void macos_window_setup(SDL_Window* win) {
+	SDL_SysWMinfo wm;
+	SDL_VERSION(&wm.version);
+	if (!win || !SDL_GetWindowWMInfo(win, &wm) || wm.subsystem != SDL_SYSWM_COCOA) return;
+	@autoreleasepool {
+		gameWindow = wm.info.cocoa.window;
+		gameWindow.backgroundColor = NSColor.blackColor;
+		gameWindow.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+		gameWindow.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+		gameWindow.titlebarAppearsTransparent = YES;
+		keeper = [GBADSWindowKeeper new];
+		if (!(mcfg && mcfg->macBorderless)) {
+			/* the title bar over the picture, hidden until the mouse comes to it */
+			NSRect content = [gameWindow contentRectForFrameRect:gameWindow.frame];
+			gameWindow.styleMask = titledMask;
+			[gameWindow setFrame:[gameWindow frameRectForContentRect:content] display:YES];
+			[keeper showTitle:NO];
+		}
+		[keeper tick:nil];
+	}
+}
+
 /* ------------------------------------------------------------- commands */
 
 static int queue[16];
@@ -164,6 +408,28 @@ static NSString* app_name(void) {
 	push((int) item.tag);
 }
 
+- (void)togglePause:(id)sender {
+	manualPause = !manualPause;
+}
+
+- (void)toggleBorderless:(id)sender {
+	if (!mcfg || !gameWindow || (gameWindow.styleMask & NSWindowStyleMaskFullScreen)) return;
+	mcfg->macBorderless = !mcfg->macBorderless;
+	macos_pref_save("mac_borderless", mcfg->macBorderless ? "1" : "0");
+	[keeper tick:nil];
+}
+
+- (void)toggleAspect:(id)sender {
+	if (!mcfg) return;
+	mcfg->macLockAspect = !mcfg->macLockAspect;
+	macos_pref_save("mac_lock_aspect", mcfg->macLockAspect ? "1" : "0");
+	[keeper tick:nil];
+}
+
+- (void)fullScreen:(id)sender {
+	[keeper toggleFullScreen];
+}
+
 - (void)closeWindow:(id)sender {
 	SDL_Event ev = { .type = SDL_QUIT };
 	SDL_PushEvent(&ev);
@@ -201,6 +467,22 @@ static NSString* app_name(void) {
 	if (item.action == @selector(manual:)) {
 		NSString* pdf = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Game/Manual.pdf"];
 		return [NSFileManager.defaultManager fileExistsAtPath:pdf];
+	}
+	if (item.action == @selector(togglePause:)) {
+		item.state = manualPause ? NSControlStateValueOn : NSControlStateValueOff;
+		return inGame;
+	}
+	if (item.action == @selector(toggleBorderless:)) {
+		item.state = mcfg && mcfg->macBorderless ? NSControlStateValueOn : NSControlStateValueOff;
+		return gameWindow && !(gameWindow.styleMask & NSWindowStyleMaskFullScreen);
+	}
+	if (item.action == @selector(toggleAspect:)) {
+		item.state = mcfg && mcfg->macLockAspect ? NSControlStateValueOn : NSControlStateValueOff;
+		return YES;
+	}
+	if (item.action == @selector(fullScreen:)) {
+		item.title = gameWindow && (gameWindow.styleMask & NSWindowStyleMaskFullScreen) ? @"Exit Full Screen" : @"Enter Full Screen";
+		return gameWindow != nil;
 	}
 	if (item.action != @selector(command:)) return YES;
 	const char* lay = mcfg ? mcfg->layout : "single";
@@ -253,6 +535,7 @@ void macos_menu_install(Config* cfg) {
 
 		NSMenu* game = submenu(bar, @"Game");
 		add(game, @"Pause Menu", @selector(command:), @"p", cmd, MC_MENU);
+		add(game, @"Pause", @selector(togglePause:), @"p", cmd | NSEventModifierFlagShift, 0);
 		[game addItem:NSMenuItem.separatorItem];
 		add(game, @"Quick Save", @selector(command:), @"s", cmd, MC_QUICK_SAVE);
 		add(game, @"Quick Load", @selector(command:), @"l", cmd, MC_QUICK_LOAD);
@@ -274,7 +557,9 @@ void macos_menu_install(Config* cfg) {
 		add(view, @"Size 4×", @selector(command:), @"4", cmd, MC_SIZE_4);
 		add(view, @"Size 5×", @selector(command:), @"5", cmd, MC_SIZE_5);
 		[view addItem:NSMenuItem.separatorItem];
-		add(view, @"Enter Full Screen", @selector(toggleFullScreen:), @"f", cmd | NSEventModifierFlagControl, 0);
+		add(view, @"Lock Aspect Ratio", @selector(toggleAspect:), nil, 0, 0);
+		add(view, @"Borderless Window", @selector(toggleBorderless:), @"b", cmd, 0);
+		add(view, @"Enter Full Screen", @selector(fullScreen:), @"f", cmd | NSEventModifierFlagControl, 0);
 
 		NSMenu* win = submenu(bar, @"Window");
 		add(win, @"Minimize", @selector(performMiniaturize:), @"m", cmd, 0);
