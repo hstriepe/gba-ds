@@ -27,6 +27,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* The folder that holds gba-ds.cfg (Contents/Resources in an app bundle,
  * else the executable's folder). */
@@ -63,6 +64,14 @@ bool macos_hold(void);
 /* each frame of a game: whether it is paused (its menu, or held: no
  * display-sleep assertion then); also runs the window's checks */
 void macos_game_paused(bool paused);
+
+/* GB Player's "Clean up GBA music": after the sound is resampled to the
+ * device's rate, an 8th-order Butterworth low-pass at 0.45 x the game's
+ * DirectSound mix rate (emu_gba_mix_rate; 0: nothing to tune to, the
+ * sound is passed through) and a 10 Hz DC blocker. Stereo int16. reset:
+ * the filter starts over (a new game, or after a pause). */
+void macos_audio_filter(int16_t* samples, size_t frames, unsigned deviceRate, unsigned mixRate);
+void macos_audio_filter_reset(void);
 
 /* The menu bar (after ui_init: SDL puts its own up as video starts). */
 void macos_menu_install(Config* cfg);

@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 #include <SDL_syswm.h>
+#include <math.h>
 #include <string.h>
 
 static Config* mcfg;
@@ -363,6 +364,72 @@ void macos_window_setup(SDL_Window* win) {
 			[keeper showTitle:NO];
 		}
 		[keeper tick:nil];
+	}
+}
+
+/* ------------------------------------------------------------- music filter */
+
+/* (GB App Builder's mgba_bridge.c, the same filter) */
+#define FILTER_STAGES 4
+typedef struct {
+	double b0, b1, b2, a1, a2;
+	double z1[2], z2[2];
+} Biquad;
+static struct {
+	unsigned mixRate, deviceRate;
+	bool lowPass;
+	Biquad stages[FILTER_STAGES];
+	double dcIn[2], dcOut[2];
+} flt;
+
+void macos_audio_filter_reset(void) {
+	memset(&flt, 0, sizeof(flt));
+}
+
+/* Butterworth: the poles of an 8th-order low-pass as four biquads (RBJ cookbook form), Q = 1 / (2 sin((2k+1)pi/16)) */
+static void filter_tune(unsigned mixRate, unsigned deviceRate) {
+	flt.mixRate = mixRate;
+	flt.deviceRate = deviceRate;
+	double cutoff = mixRate * 0.45;
+	flt.lowPass = cutoff < 20000.0 && cutoff < deviceRate * 0.45; /* (above that the resampler has done it) */
+	fprintf(stderr, "music filter: mix rate %u Hz, %s\n", mixRate, flt.lowPass ? "low-pass on" : "DC blocker only");
+	if (!flt.lowPass) return;
+	double w0 = 2.0 * M_PI * cutoff / deviceRate, cosw = cos(w0);
+	for (int i = 0; i < FILTER_STAGES; ++i) {
+		double q = 1.0 / (2.0 * sin((2 * i + 1) * M_PI / (4 * FILTER_STAGES)));
+		double alpha = sin(w0) / (2.0 * q), a0 = 1.0 + alpha;
+		Biquad* s = &flt.stages[i];
+		s->b0 = (1.0 - cosw) / 2.0 / a0;
+		s->b1 = (1.0 - cosw) / a0;
+		s->b2 = s->b0;
+		s->a1 = -2.0 * cosw / a0;
+		s->a2 = (1.0 - alpha) / a0;
+		/* (the state carries over: a retune mid-song changes the cutoff without a click) */
+	}
+}
+
+void macos_audio_filter(int16_t* samples, size_t frames, unsigned deviceRate, unsigned mixRate) {
+	if (!deviceRate) return;
+	if (mixRate && (mixRate != flt.mixRate || deviceRate != flt.deviceRate)) filter_tune(mixRate, deviceRate);
+	if (!flt.mixRate) return;
+	const double dcR = 1.0 - 2.0 * M_PI * 10.0 / deviceRate;
+	for (size_t i = 0; i < frames; ++i) {
+		for (int ch = 0; ch < 2; ++ch) {
+			double x = samples[i * 2 + ch];
+			double y = x - flt.dcIn[ch] + dcR * flt.dcOut[ch]; /* DC blocker: y = x - x[-1] + R y[-1] */
+			flt.dcIn[ch] = x;
+			flt.dcOut[ch] = y;
+			if (flt.lowPass) {
+				for (int k = 0; k < FILTER_STAGES; ++k) {
+					Biquad* s = &flt.stages[k];
+					double out = s->b0 * y + s->z1[ch]; /* transposed direct form II */
+					s->z1[ch] = s->b1 * y - s->a1 * out + s->z2[ch];
+					s->z2[ch] = s->b2 * y - s->a2 * out;
+					y = out;
+				}
+			}
+			samples[i * 2 + ch] = (int16_t) lrint(y > 32767.0 ? 32767.0 : y < -32768.0 ? -32768.0 : y);
+		}
 	}
 }
 

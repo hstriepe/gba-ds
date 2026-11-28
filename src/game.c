@@ -6568,6 +6568,9 @@ static enum GameExit game_run_inner(Config* c, const char* rom, bool fromLibrary
 	SDL_AudioDeviceID audio = open_game_audio(&want);
 	SDL_AudioStream* audioConv = NULL;
 	int convFrom = 0;
+#ifdef __APPLE__
+	macos_audio_filter_reset();
+#endif
 	Health hl; /* (the sound delay in use, and the health report's counts: for this session) */
 	health_init(&hl, cfg->audioLatency, want.freq);
 	/* testing only: GBADS_TEST_STARVE=1 throws away the sound of 20 frames in every 100 (after frame 200) */
@@ -7519,6 +7522,10 @@ static enum GameExit game_run_inner(Config* c, const char* rom, bool fromLibrary
 							bytes += 4;
 						}
 					}
+#ifdef __APPLE__
+					/* GB Player's music filter (not for GB games, nor when fast-forwarding as fast as it goes) */
+					if (cfg->macAudioFilter && !ffMax && !emu_is_gb(&emu)) macos_audio_filter(conv, (size_t) bytes / 4, (unsigned) want.freq, emu_gba_mix_rate(&emu));
+#endif
 					int vol = ff && cfg->ffMute ? 0 : ui_volume(); /* (issue #109: muted, the sound still flows, as silence, so the queue keeps its level) */
 					if (vol < 100) {
 						/* (squared: closer to how loud it sounds) */

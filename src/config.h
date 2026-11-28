@@ -157,6 +157,7 @@ typedef struct Config {
 	bool macLockAspect;   /* mac_lock_aspect: resizing keeps the layout's shape (on) */
 	bool macKeepAwake;    /* mac_keep_awake: the display doesn't sleep while a game runs (on) */
 	bool macPauseInactive; /* mac_pause_inactive: the game pauses while another app is in front */
+	bool macAudioFilter;  /* mac_audio_filter: GB Player's "Clean up GBA music" (on) */
 #endif
 	char updateUrl[256];  /* testing: the release API to ask instead of GitHub's */
 	char rom[512];        /* launch straight into this game (skips the library) */

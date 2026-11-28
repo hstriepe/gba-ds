@@ -100,6 +100,9 @@ bool emu_rom_header(const char* path, uint8_t* out, size_t n);
  * issue #77). Its title (up to 15 characters, unprintable ones "_"). */
 /* Is the game a Game Boy / Game Boy Color one (issue #77)? */
 bool emu_is_gb(const Emu* e);
+#ifdef __APPLE__
+unsigned emu_gba_mix_rate(Emu* e); /* (macOS: the DirectSound mix rate, for the music filter) */
+#endif
 int emu_gb_kind(const Emu* e); /* Emu.gbKind */
 bool emu_gb_sgb(const Emu* e);  /* Emu.gbSgb */
 bool emu_gb_sgb_header(const Emu* e); /* Emu.gbSgbHeader */

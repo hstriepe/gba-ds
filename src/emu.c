@@ -1414,6 +1414,21 @@ unsigned emu_audio_rate(Emu* e) {
 	return e->core->audioSampleRate(e->core);
 }
 
+#ifdef __APPLE__
+/* The rate a GBA game feeds DirectSound FIFO A: the overflow rate of its
+ * timer (0 or 1), as GB App Builder's GB Player reads it for its music
+ * filter (macos.m). 0 for a GB game, or when not plausible (4-48 kHz), as
+ * while a game reprograms its sound. */
+unsigned emu_gba_mix_rate(Emu* e) {
+	if (!e->core || e->core->platform(e->core) != mPLATFORM_GBA) return 0;
+	struct GBA* gba = e->core->board;
+	const struct GBATimer* timer = &gba->timers[gba->audio.chATimer ? 1 : 0];
+	unsigned prescale = GBATimerFlagsGetPrescaleBits(timer->flags); /* (the shift itself: 0, 6, 8 or 10) */
+	unsigned rate = (GBA_ARM7TDMI_FREQUENCY >> prescale) / (0x10000u - timer->reload);
+	return rate < 4000 || rate > 48000 ? 0 : rate;
+}
+#endif
+
 /* ------------------------------------------------------------ sprite hiding */
 
 /* Rules per renderer: the game core hides the Metroid HUD mini-map, the map

@@ -58,6 +58,7 @@ void config_defaults(Config* c) {
 	c->overlayMode = OVM_OFF;
 	c->macLockAspect = true;
 	c->macKeepAwake = true;
+	c->macAudioFilter = true;
 #else
 	c->overlayMode = OVM_GENERATED;
 #endif
@@ -128,6 +129,7 @@ static bool set_option(Config* c, const char* key, const char* val) {
 	BOOL("mac_lock_aspect", macLockAspect)
 	BOOL("mac_keep_awake", macKeepAwake)
 	BOOL("mac_pause_inactive", macPauseInactive)
+	BOOL("mac_audio_filter", macAudioFilter)
 #endif
 	BOOL("swap", swap)
 	STR("scale", scale)
